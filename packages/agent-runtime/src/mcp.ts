@@ -1,7 +1,6 @@
 import { createHash } from 'crypto'
 
 import { getErrorObject } from '@codebuff/common/util/error'
-import { convertJsonSchemaToZod } from 'zod-from-json-schema'
 
 import { MCP_TOOL_SEPARATOR } from './mcp-constants'
 
@@ -90,7 +89,13 @@ export async function getMCPToolData(
               exposed = `${exposed.slice(0, 55)}_${hash.slice(0, 8)}`
             }
             writeTo[exposed] = {
-              inputSchema: convertJsonSchemaToZod(inputSchema as any) as any,
+              // Store the raw JSON Schema from the server, NOT the converted
+              // Zod schema. Tool definitions are persisted in run state /
+              // session state and must stay JSON-serializable; Zod instances
+              // are cyclic and make any JSON.stringify over that state
+              // detonate. Consumers convert at point of use (ensureZodSchema /
+              // toTokenCountInputSchema).
+              inputSchema: inputSchema as {},
               endsAgentStep: true,
               description,
               ...(exposed !== raw && {
