@@ -10,8 +10,8 @@ name: update-fix-1306
 # Token-triggered pushes do not start new workflow runs, so the push below
 # cannot loop back into this workflow.
 #
-# Triggers: daily schedule, manual dispatch, and any push to fix-1306 (the last
-# one validates the branch right after it is pushed).
+# Triggers: twice-daily schedule, manual dispatch, and any push to fix-1306
+# (the last one validates the branch right after it is pushed).
 #
 # NOTE: this file must exist identically on BOTH main and fix-1306. GitHub
 # runs scheduled workflows from the default branch (main) only; the push
@@ -21,10 +21,15 @@ name: update-fix-1306
 # For incompatibility notifications, enable Issues on the fork (Settings →
 # General → Features → Issues); if they stay disabled, reports fall back to
 # the job summary of the failed run.
+#
+# Push notifications (merged fix, incompatibilities) also go out via ntfy.sh,
+# no account needed: subscribe to the topic below in the ntfy app or at
+# https://ntfy.sh/<topic>. To use your own private topic, change NTOPIC (the
+# job env var) identically on both branches.
 
 on:
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 */12 * * *'
   workflow_dispatch:
   push:
     branches: [fix-1306]
@@ -41,6 +46,8 @@ jobs:
   rebase-test-push:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      NTOPIC: dvelm-freebuff-fix1306
     steps:
       - name: Check out fix-1306
         uses: actions/checkout@v4
@@ -78,6 +85,17 @@ jobs:
           fi
           EOF
           chmod +x /tmp/open-issue.sh
+          cat > /tmp/notify.sh <<'EOF'
+          #!/bin/bash
+          # notify.sh <title> <message> — best-effort push notification via
+          # ntfy.sh to $NTOPIC. Never fails the step.
+          title="$1"; message="$2"
+          if [ -n "${NTOPIC:-}" ]; then
+            curl -s -m 20 -H "Title: $title" -d "$message" "https://ntfy.sh/$NTOPIC" > /dev/null || true
+          fi
+          echo "notify attempted: $title"
+          EOF
+          chmod +x /tmp/notify.sh
 
       - name: Track upstream and inspect PR state
         id: upstream
@@ -113,6 +131,7 @@ jobs:
             echo 'retired; the local update-fixed.bat refuses to build from it once it sees the marker.'
           } > /tmp/merged.md
           /tmp/open-issue.sh '[auto-update] fix-1306 appears merged upstream' /tmp/merged.md
+          /tmp/notify.sh 'freeb: upstream merged the fix' 'Upstream main now contains the MCP schema fix. Fork branch retired — switch to the release build.'
 
       - name: Rebase onto upstream main
         if: steps.upstream.outputs.merged != 'true'
@@ -141,6 +160,7 @@ jobs:
               echo 'The fork branch was left untouched. Resolve manually or wait for the next run.'
             } > /tmp/conflict.md
             /tmp/open-issue.sh "[auto-update] fix-1306 incompatible with upstream ${{ steps.upstream.outputs.upstream }}" /tmp/conflict.md
+            /tmp/notify.sh 'freeb: fix incompatible with upstream' "Rebase of fix-1306 onto ${{ steps.upstream.outputs.upstream }} conflicted. Fork kept on last green state."
             exit 1
           fi
 
@@ -162,6 +182,7 @@ jobs:
               echo '```'
             } > /tmp/testfail.md
             /tmp/open-issue.sh "[auto-update] fix-1306 tests fail on upstream ${{ steps.upstream.outputs.upstream }}" /tmp/testfail.md
+            /tmp/notify.sh 'freeb: fix tests fail on upstream' "Regression suite failed on upstream ${{ steps.upstream.outputs.upstream }}. Fork kept on last green state."
             exit 1
           fi
           fail=0
@@ -175,6 +196,7 @@ jobs:
               echo '```'
             } > /tmp/mcpfail.md
             /tmp/open-issue.sh "[auto-update] fix-1306 MCP tests fail on upstream ${{ steps.upstream.outputs.upstream }}" /tmp/mcpfail.md
+            /tmp/notify.sh 'freeb: fix MCP tests fail on upstream' "MCP mapping tests failed on upstream ${{ steps.upstream.outputs.upstream }}. Fork kept on last green state."
             exit 1
           fi
           # Full agent-runtime suite: the only tolerated failures are the two
@@ -194,6 +216,7 @@ jobs:
               echo '```'
             } > /tmp/fullfail.md
             /tmp/open-issue.sh "[auto-update] fix-1306 new failures on upstream ${{ steps.upstream.outputs.upstream }}" /tmp/fullfail.md
+            /tmp/notify.sh 'freeb: new failures on upstream' "Full suite shows new failures on upstream ${{ steps.upstream.outputs.upstream }}. Fork kept on last green state."
             exit 1
           fi
 
