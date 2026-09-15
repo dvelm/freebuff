@@ -1,0 +1,209 @@
+name: update-fix-1306
+
+# Keeps this fork's fix-1306 branch (MCP schema fix for CodebuffAI/freebuff#1306,
+# following the approach of upstream PR #1259) rebased onto the latest upstream
+# main. The branch is pushed ONLY when the rebase is conflict-free AND the
+# regression suite passes; otherwise an issue is opened and the branch is left
+# untouched. A local updater script (update-fixed.bat, kept out of git)
+# consumes this branch and builds the fixed binary.
+#
+# Token-triggered pushes do not start new workflow runs, so the push below
+# cannot loop back into this workflow.
+#
+# Triggers: daily schedule, manual dispatch, and any push to fix-1306 (the last
+# one validates the branch right after it is pushed).
+#
+# NOTE: this file must exist identically on BOTH main and fix-1306. GitHub
+# runs scheduled workflows from the default branch (main) only; the push
+# trigger is evaluated on fix-1306. The job itself always checks out fix-1306,
+# so one identical copy per branch is enough — keep them in sync when editing.
+#
+# For incompatibility notifications, enable Issues on the fork (Settings →
+# General → Features → Issues); if they stay disabled, reports fall back to
+# the job summary of the failed run.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+  push:
+    branches: [fix-1306]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: update-fix-1306
+  cancel-in-progress: false
+
+jobs:
+  rebase-test-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out fix-1306
+        uses: actions/checkout@v4
+        with:
+          ref: fix-1306
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Write issue helper
+        run: |
+          cat > /tmp/open-issue.sh <<'EOF'
+          #!/bin/bash
+          # open-issue.sh <title> <body-file> — create only if no open issue
+          # matches the title. Never fails the step: if Issues are disabled on
+          # the fork, the report goes to the job summary instead.
+          title="$1"; body="$2"
+          existing=$(gh issue list --search "$title in:title" --state open --json number --jq '.[0].number' 2>/dev/null)
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            echo "Issue #$existing already open for: $title"
+          elif gh issue create --title "$title" --body-file "$body"; then
+            echo "Opened issue for: $title"
+          else
+            {
+              echo "## $title"
+              echo
+              echo '_Could not open an issue (Issues may be disabled on this fork); report preserved here._'
+              echo
+              cat "$body"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo 'Issue creation failed; report written to job summary.'
+          fi
+          EOF
+          chmod +x /tmp/open-issue.sh
+
+      - name: Track upstream and inspect PR state
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name 'fix-1306-bot'
+          git config user.email 'fix-1306-bot@users.noreply.github.com'
+          git remote add upstream https://github.com/CodebuffAI/freebuff.git
+          git fetch upstream main
+          git fetch origin fix-1306
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "upstream=$(git rev-parse upstream/main)" >> "$GITHUB_OUTPUT"
+          if git cat-file -e upstream/main:packages/agent-runtime/src/util/zod-safe-clone.ts 2>/dev/null; then
+            echo 'merged=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'merged=false' >> "$GITHUB_OUTPUT"
+          fi
+          echo "pr=$(gh pr view 1259 --repo CodebuffAI/freebuff --json state,mergedAt,updatedAt --jq '{state: .state, mergedAt: .mergedAt, updatedAt: .updatedAt}')" >> "$GITHUB_OUTPUT"
+
+      - name: Report fix merged upstream (no push)
+        if: steps.upstream.outputs.merged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "Upstream main (${{ steps.upstream.outputs.upstream }}) now contains"
+            echo 'packages/agent-runtime/src/util/zod-safe-clone.ts, the marker file of the fix-1306 series.'
+            echo
+            echo "Upstream PR #1259 state: ${{ steps.upstream.outputs.pr }}"
+            echo
+            echo 'No rebase/push was performed. The fork branch fix-1306 is obsolete and can be'
+            echo 'retired; the local update-fixed.bat refuses to build from it once it sees the marker.'
+          } > /tmp/merged.md
+          /tmp/open-issue.sh '[auto-update] fix-1306 appears merged upstream' /tmp/merged.md
+
+      - name: Rebase onto upstream main
+        if: steps.upstream.outputs.merged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git rebase upstream/main > /tmp/rebase.log 2>&1; then
+            tail -5 /tmp/rebase.log
+          else
+            conflicts=$(git diff --name-only --diff-filter=U)
+            if [ -z "$conflicts" ]; then
+              conflicts=$(git status --porcelain | grep -E '^[ADU]{2} ' || true)
+            fi
+            git rebase --abort
+            {
+              echo "Rebasing fix-1306 (${{ steps.upstream.outputs.base }}) onto upstream main (${{ steps.upstream.outputs.upstream }}) failed with conflicts."
+              echo
+              echo 'Conflicting files:'
+              echo "$conflicts" | sed 's/^/- /'
+              echo
+              echo 'Rebase log tail:'
+              echo '```'
+              tail -30 /tmp/rebase.log
+              echo '```'
+              echo
+              echo 'The fork branch was left untouched. Resolve manually or wait for the next run.'
+            } > /tmp/conflict.md
+            /tmp/open-issue.sh "[auto-update] fix-1306 incompatible with upstream ${{ steps.upstream.outputs.upstream }}" /tmp/conflict.md
+            exit 1
+          fi
+
+      - name: Install, build SDK, run regression suite
+        if: steps.upstream.outputs.merged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bun install
+          bun run build:sdk
+          fail=0
+          bun test packages/agent-runtime/src/__tests__/prompts-schema-handling.test.ts packages/agent-runtime/src/__tests__/mcp-schema-store.test.ts packages/agent-runtime/src/tools/__tests__/parse-raw-custom-tool-call.test.ts packages/agent-runtime/src/tools/__tests__/serve-input-schema.test.ts packages/agent-runtime/src/util/__tests__/json-safe-state.test.ts packages/agent-runtime/src/util/__tests__/to-json-schema.test.ts packages/agent-runtime/src/util/__tests__/zod-safe-clone.test.ts > /tmp/agent.log 2>&1 || fail=1
+          tail -5 /tmp/agent.log
+          if [ "$fail" != 0 ] || ! grep -qE '^ 0 fail' /tmp/agent.log; then
+            {
+              echo 'Regression suite failed on the rebased tree:'
+              echo '```'
+              tail -20 /tmp/agent.log
+              echo '```'
+            } > /tmp/testfail.md
+            /tmp/open-issue.sh "[auto-update] fix-1306 tests fail on upstream ${{ steps.upstream.outputs.upstream }}" /tmp/testfail.md
+            exit 1
+          fi
+          fail=0
+          (cd common && bun test src/mcp/__tests__/mcp-content-mapping.test.ts src/mcp/__tests__/call-mcp-tool-resources.test.ts) > /tmp/mcp.log 2>&1 || fail=1
+          tail -4 /tmp/mcp.log
+          if [ "$fail" != 0 ] || ! grep -qE '^ 0 fail' /tmp/mcp.log; then
+            {
+              echo 'MCP mapping tests failed on the rebased tree:'
+              echo '```'
+              tail -20 /tmp/mcp.log
+              echo '```'
+            } > /tmp/mcpfail.md
+            /tmp/open-issue.sh "[auto-update] fix-1306 MCP tests fail on upstream ${{ steps.upstream.outputs.upstream }}" /tmp/mcpfail.md
+            exit 1
+          fi
+          # Full agent-runtime suite: the only tolerated failures are the two
+          # known pre-existing missing-module errors
+          # (agents-graveyard/researcher). Anything else is an incompatibility.
+          bun test packages/agent-runtime > /tmp/full.log 2>&1 || true
+          tail -4 /tmp/full.log
+          total_errors=$(grep -c '^error:' /tmp/full.log || true)
+          researcher_errors=$(grep -c 'agents-graveyard/researcher/researcher' /tmp/full.log || true)
+          fail_n=$(grep -oE '[0-9]+ fail' /tmp/full.log | grep -oE '[0-9]+' | head -1)
+          if [ "$total_errors" != "$researcher_errors" ] || [ "$fail_n" != "$researcher_errors" ]; then
+            {
+              echo 'Full agent-runtime suite shows NEW failures beyond the two known pre-existing'
+              echo 'missing-module errors (agents-graveyard/researcher):'
+              echo '```'
+              grep -E '^error:| [0-9]+ (pass|fail)' /tmp/full.log | head -20
+              echo '```'
+            } > /tmp/fullfail.md
+            /tmp/open-issue.sh "[auto-update] fix-1306 new failures on upstream ${{ steps.upstream.outputs.upstream }}" /tmp/fullfail.md
+            exit 1
+          fi
+
+      - name: Push rebased branch
+        if: steps.upstream.outputs.merged != 'true'
+        run: |
+          old=$(git rev-parse origin/fix-1306)
+          new=$(git rev-parse HEAD)
+          if [ "$old" = "$new" ]; then
+            echo "Already current ($new). Nothing to push."
+          else
+            git push --force-with-lease=fix-1306:"$old" origin HEAD:fix-1306
+          fi
