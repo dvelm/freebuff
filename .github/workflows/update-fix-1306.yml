@@ -303,12 +303,19 @@ jobs:
         shell: bash
         run: |
           bun install
-          bun run build:freebuff
+          VER=$(curl -s --max-time 20 https://registry.npmjs.org/freebuff/latest | grep -oE '"version":"[^"]+"' | head -1 | cut -d'"' -f4)
+          if [ -z "$VER" ]; then
+            echo '::warning::npm lookup failed, falling back to 0.0.0-dev.'
+            VER='0.0.0'
+          fi
+          echo "BUILD_VER=$VER-dev" >> "$GITHUB_ENV"
+          bun freebuff/cli/build.ts "$VER-dev"
 
       - name: Verify binary
         shell: bash
         run: |
-          cli/bin/freebuff.exe --version
+          cli/bin/freebuff.exe --version | tee /tmp/ver.log
+          grep -q "$BUILD_VER" /tmp/ver.log
           cli/bin/freebuff.exe --smoke-tree-sitter > /tmp/smoke.log 2>&1
           cat /tmp/smoke.log
           grep -q 'smoke ok' /tmp/smoke.log
@@ -343,6 +350,7 @@ jobs:
           Fixed build for strict models (upstream issue #1306): MCP tool parameters arrive intact.
           No login needed to download; freebuff login needed to use.
 
+          - Binary version: $BUILD_VER (tracks the latest upstream release)
           - Upstream base: $UPSTREAM_SHA
           - Fix commit: $FIX_SHA
           - Built: $(date -u '+%Y-%m-%d %H:%M UTC')
@@ -357,7 +365,7 @@ jobs:
           EOF
           gh release delete fix-1306-latest --yes --cleanup-tag || true
           gh release create fix-1306-latest \
-            --title "fix-1306 latest (${UPSTREAM_SHA:0:7} + fix ${FIX_SHA:0:7})" \
+            --title "fix-1306 latest — v$BUILD_VER (upstream ${UPSTREAM_SHA:0:7} + fix ${FIX_SHA:0:7})" \
             --notes-file /tmp/notes.md \
             freeb-windows-x64.zip \
             release-assets/freebuff-fixed.exe \
