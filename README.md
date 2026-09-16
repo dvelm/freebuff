@@ -1,5 +1,14 @@
 # Freebuff
 
+> **This fork: MCP tools work with any model.** Ready-to-run fixed builds, no build needed.
+>
+> **Use it in 3 steps:**
+> 1. Download `freeb-windows-x64.zip` from the latest [`fix-1306-latest` release](https://github.com/dvelm/freebuff/releases/tag/fix-1306-latest) and unzip it (keep the files together, e.g. `C:\Tools\freebuff-fixed`).
+> 2. Optional: put the folder on `PATH` (the zip includes a `freeb.bat` launcher).
+> 3. Run `freebuff-fixed.exe --cwd <your-project>` (or `freeb --cwd <your-project>`).
+>
+> New builds appear automatically (about every 12h) whenever the upstream code changes.
+
 English | [简体中文](./README.zh-CN.md)
 
 **Five free AI products for coding, building, and research.** No subscription, credits, or API key required.
