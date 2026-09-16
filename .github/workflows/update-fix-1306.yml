@@ -1,0 +1,373 @@
+name: update-fix-1306
+
+# Keeps this fork's fix-1306 branch (MCP schema fix for CodebuffAI/freebuff#1306,
+# following the approach of upstream PR #1259) rebased onto the latest upstream
+# main. The branch is pushed ONLY when the rebase is conflict-free AND the
+# regression suite passes; otherwise an issue is opened and the branch is left
+# untouched. A local updater script (update-fixed.bat, kept out of git)
+# consumes this branch and builds the fixed binary.
+#
+# Token-triggered pushes do not start new workflow runs, so the push below
+# cannot loop back into this workflow.
+#
+# Triggers: twice-daily schedule, manual dispatch, and any push to fix-1306
+# (the last one validates the branch right after it is pushed).
+#
+# NOTE: this file must exist identically on BOTH main and fix-1306. GitHub
+# runs scheduled workflows from the default branch (main) only; the push
+# trigger is evaluated on fix-1306. The job itself always checks out fix-1306,
+# so one identical copy per branch is enough — keep them in sync when editing.
+#
+# For incompatibility notifications, enable Issues on the fork (Settings →
+# General → Features → Issues); if they stay disabled, reports fall back to
+# the job summary of the failed run.
+#
+# Push notifications (merged fix, incompatibilities) also go out via ntfy.sh,
+# no account needed: subscribe to the topic below in the ntfy app or at
+# https://ntfy.sh/<topic>. To use your own private topic, change NTOPIC (the
+# job env var) identically on both branches.
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'
+  workflow_dispatch:
+  push:
+    branches: [fix-1306]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: update-fix-1306
+  cancel-in-progress: false
+
+jobs:
+  rebase-test-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NTOPIC: dvelm-freebuff-fix1306
+    outputs:
+      merged: ${{ steps.upstream.outputs.merged }}
+      pushed: ${{ steps.push.outputs.pushed }}
+      sha: ${{ steps.push.outputs.sha }}
+      upstream: ${{ steps.upstream.outputs.upstream }}
+      have_release: ${{ steps.push.outputs.have_release }}
+    steps:
+      - name: Check out fix-1306
+        uses: actions/checkout@v4
+        with:
+          ref: fix-1306
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Write issue helper
+        run: |
+          cat > /tmp/open-issue.sh <<'EOF'
+          #!/bin/bash
+          # open-issue.sh <title> <body-file> — create only if no open issue
+          # matches the title. Never fails the step: if Issues are disabled on
+          # the fork, the report goes to the job summary instead.
+          title="$1"; body="$2"
+          existing=$(gh issue list --search "$title in:title" --state open --json number --jq '.[0].number' 2>/dev/null)
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            echo "Issue #$existing already open for: $title"
+          elif gh issue create --title "$title" --body-file "$body"; then
+            echo "Opened issue for: $title"
+          else
+            {
+              echo "## $title"
+              echo
+              echo '_Could not open an issue (Issues may be disabled on this fork); report preserved here._'
+              echo
+              cat "$body"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo 'Issue creation failed; report written to job summary.'
+          fi
+          EOF
+          chmod +x /tmp/open-issue.sh
+          cat > /tmp/notify.sh <<'EOF'
+          #!/bin/bash
+          # notify.sh <title> <message> — best-effort push notification via
+          # ntfy.sh to $NTOPIC. Never fails the step.
+          title="$1"; message="$2"
+          if [ -n "${NTOPIC:-}" ]; then
+            curl -s -m 20 -H "Title: $title" -d "$message" "https://ntfy.sh/$NTOPIC" > /dev/null || true
+          fi
+          echo "notify attempted: $title"
+          EOF
+          chmod +x /tmp/notify.sh
+
+      - name: Track upstream and inspect PR state
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name 'fix-1306-bot'
+          git config user.email 'fix-1306-bot@users.noreply.github.com'
+          git remote add upstream https://github.com/CodebuffAI/freebuff.git
+          git fetch upstream main
+          git fetch origin fix-1306
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "upstream=$(git rev-parse upstream/main)" >> "$GITHUB_OUTPUT"
+          if git cat-file -e upstream/main:packages/agent-runtime/src/util/zod-safe-clone.ts 2>/dev/null; then
+            echo 'merged=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'merged=false' >> "$GITHUB_OUTPUT"
+          fi
+          echo "pr=$(gh pr view 1259 --repo CodebuffAI/freebuff --json state,mergedAt,updatedAt --jq '{state: .state, mergedAt: .mergedAt, updatedAt: .updatedAt}')" >> "$GITHUB_OUTPUT"
+
+      - name: Report fix merged upstream (no push)
+        if: steps.upstream.outputs.merged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "Upstream main (${{ steps.upstream.outputs.upstream }}) now contains"
+            echo 'packages/agent-runtime/src/util/zod-safe-clone.ts, the marker file of the fix-1306 series.'
+            echo
+            echo "Upstream PR #1259 state: ${{ steps.upstream.outputs.pr }}"
+            echo
+            echo 'No rebase/push was performed. The fork branch fix-1306 is obsolete and can be'
+            echo 'retired; the local update-fixed.bat refuses to build from it once it sees the marker.'
+          } > /tmp/merged.md
+          /tmp/open-issue.sh '[auto-update] fix-1306 appears merged upstream' /tmp/merged.md
+          /tmp/notify.sh 'freeb: upstream merged the fix' 'Upstream main now contains the MCP schema fix. Fork branch retired — switch to the release build.'
+
+      - name: Rebase onto upstream main
+        if: steps.upstream.outputs.merged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git rebase upstream/main > /tmp/rebase.log 2>&1; then
+            tail -5 /tmp/rebase.log
+          else
+            conflicts=$(git diff --name-only --diff-filter=U)
+            if [ -z "$conflicts" ]; then
+              conflicts=$(git status --porcelain | grep -E '^[ADU]{2} ' || true)
+            fi
+            git rebase --abort
+            {
+              echo "Rebasing fix-1306 (${{ steps.upstream.outputs.base }}) onto upstream main (${{ steps.upstream.outputs.upstream }}) failed with conflicts."
+              echo
+              echo 'Conflicting files:'
+              echo "$conflicts" | sed 's/^/- /'
+              echo
+              echo 'Rebase log tail:'
+              echo '```'
+              tail -30 /tmp/rebase.log
+              echo '```'
+              echo
+              echo 'The fork branch was left untouched. Resolve manually or wait for the next run.'
+            } > /tmp/conflict.md
+            /tmp/open-issue.sh "[auto-update] fix-1306 incompatible with upstream ${{ steps.upstream.outputs.upstream }}" /tmp/conflict.md
+            /tmp/notify.sh 'freeb: fix incompatible with upstream' "Rebase of fix-1306 onto ${{ steps.upstream.outputs.upstream }} conflicted. Fork kept on last green state."
+            exit 1
+          fi
+
+      - name: Install, build SDK, run regression suite
+        if: steps.upstream.outputs.merged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bun install
+          bun run build:sdk
+          fail=0
+          bun test packages/agent-runtime/src/__tests__/prompts-schema-handling.test.ts packages/agent-runtime/src/__tests__/mcp-schema-store.test.ts packages/agent-runtime/src/tools/__tests__/parse-raw-custom-tool-call.test.ts packages/agent-runtime/src/tools/__tests__/serve-input-schema.test.ts packages/agent-runtime/src/util/__tests__/json-safe-state.test.ts packages/agent-runtime/src/util/__tests__/to-json-schema.test.ts packages/agent-runtime/src/util/__tests__/zod-safe-clone.test.ts > /tmp/agent.log 2>&1 || fail=1
+          tail -5 /tmp/agent.log
+          if [ "$fail" != 0 ] || ! grep -qE '^ 0 fail' /tmp/agent.log; then
+            {
+              echo 'Regression suite failed on the rebased tree:'
+              echo '```'
+              tail -20 /tmp/agent.log
+              echo '```'
+            } > /tmp/testfail.md
+            /tmp/open-issue.sh "[auto-update] fix-1306 tests fail on upstream ${{ steps.upstream.outputs.upstream }}" /tmp/testfail.md
+            /tmp/notify.sh 'freeb: fix tests fail on upstream' "Regression suite failed on upstream ${{ steps.upstream.outputs.upstream }}. Fork kept on last green state."
+            exit 1
+          fi
+          fail=0
+          (cd common && bun test src/mcp/__tests__/mcp-content-mapping.test.ts src/mcp/__tests__/call-mcp-tool-resources.test.ts) > /tmp/mcp.log 2>&1 || fail=1
+          tail -4 /tmp/mcp.log
+          if [ "$fail" != 0 ] || ! grep -qE '^ 0 fail' /tmp/mcp.log; then
+            {
+              echo 'MCP mapping tests failed on the rebased tree:'
+              echo '```'
+              tail -20 /tmp/mcp.log
+              echo '```'
+            } > /tmp/mcpfail.md
+            /tmp/open-issue.sh "[auto-update] fix-1306 MCP tests fail on upstream ${{ steps.upstream.outputs.upstream }}" /tmp/mcpfail.md
+            /tmp/notify.sh 'freeb: fix MCP tests fail on upstream' "MCP mapping tests failed on upstream ${{ steps.upstream.outputs.upstream }}. Fork kept on last green state."
+            exit 1
+          fi
+          # Full agent-runtime suite: the only tolerated failures are the two
+          # known pre-existing missing-module errors
+          # (agents-graveyard/researcher). Anything else is an incompatibility.
+          bun test packages/agent-runtime > /tmp/full.log 2>&1 || true
+          tail -4 /tmp/full.log
+          total_errors=$(grep -c '^error:' /tmp/full.log || true)
+          researcher_errors=$(grep -c 'agents-graveyard/researcher/researcher' /tmp/full.log || true)
+          fail_n=$(grep -oE '[0-9]+ fail' /tmp/full.log | grep -oE '[0-9]+' | head -1)
+          if [ "$total_errors" != "$researcher_errors" ] || [ "$fail_n" != "$researcher_errors" ]; then
+            {
+              echo 'Full agent-runtime suite shows NEW failures beyond the two known pre-existing'
+              echo 'missing-module errors (agents-graveyard/researcher):'
+              echo '```'
+              grep -E '^error:| [0-9]+ (pass|fail)' /tmp/full.log | head -20
+              echo '```'
+            } > /tmp/fullfail.md
+            /tmp/open-issue.sh "[auto-update] fix-1306 new failures on upstream ${{ steps.upstream.outputs.upstream }}" /tmp/fullfail.md
+            /tmp/notify.sh 'freeb: new failures on upstream' "Full suite shows new failures on upstream ${{ steps.upstream.outputs.upstream }}. Fork kept on last green state."
+            exit 1
+          fi
+
+      - name: Push rebased branch
+        id: push
+        if: steps.upstream.outputs.merged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          old=$(git rev-parse origin/fix-1306)
+          new=$(git rev-parse HEAD)
+          if [ "$old" = "$new" ]; then
+            echo 'pushed=false' >> "$GITHUB_OUTPUT"
+            echo "Already current ($new). Nothing to push."
+          else
+            git push --force-with-lease=fix-1306:"$old" origin HEAD:fix-1306
+            echo 'pushed=true' >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$new" >> "$GITHUB_OUTPUT"
+          if gh release view fix-1306-latest >/dev/null 2>&1; then
+            echo 'have_release=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'have_release=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  build-release:
+    needs: rebase-test-push
+    if: needs.rebase-test-push.outputs.merged != 'true' && (needs.rebase-test-push.outputs.pushed == 'true' || needs.rebase-test-push.outputs.have_release != 'true')
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out green commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.rebase-test-push.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Write prod env file from Actions variables
+        shell: bash
+        env:
+          NEXT_PUBLIC_CB_ENVIRONMENT: ${{ vars.NEXT_PUBLIC_CB_ENVIRONMENT }}
+          NEXT_PUBLIC_CODEBUFF_APP_URL: ${{ vars.NEXT_PUBLIC_CODEBUFF_APP_URL }}
+          NEXT_PUBLIC_FREEBUFF_APP_URL: ${{ vars.NEXT_PUBLIC_FREEBUFF_APP_URL }}
+          NEXT_PUBLIC_SUPPORT_EMAIL: ${{ vars.NEXT_PUBLIC_SUPPORT_EMAIL }}
+          NEXT_PUBLIC_POSTHOG_API_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_API_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST_URL: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST_URL }}
+          NEXT_PUBLIC_GRAVITY_PIXEL_ID: ${{ vars.NEXT_PUBLIC_GRAVITY_PIXEL_ID }}
+          NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_STRIPE_CUSTOMER_PORTAL: ${{ vars.NEXT_PUBLIC_STRIPE_CUSTOMER_PORTAL }}
+          NEXT_PUBLIC_WEB_PORT: ${{ vars.NEXT_PUBLIC_WEB_PORT }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+        run: |
+          missing=0
+          : > .env.local
+          for name in NEXT_PUBLIC_CB_ENVIRONMENT NEXT_PUBLIC_CODEBUFF_APP_URL NEXT_PUBLIC_FREEBUFF_APP_URL NEXT_PUBLIC_SUPPORT_EMAIL NEXT_PUBLIC_POSTHOG_API_KEY NEXT_PUBLIC_POSTHOG_HOST_URL NEXT_PUBLIC_GRAVITY_PIXEL_ID NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY NEXT_PUBLIC_STRIPE_CUSTOMER_PORTAL NEXT_PUBLIC_WEB_PORT NEXT_PUBLIC_TURNSTILE_SITE_KEY; do
+            value="${!name:-}"
+            if [ -z "$value" ]; then
+              echo "::error::Actions variable $name is not set."
+              missing=1
+            else
+              printf '%s=%s\n' "$name" "$value" >> .env.local
+            fi
+          done
+          if [ "$missing" != 0 ]; then
+            echo 'One-time setup: open https://github.com/dvelm/freebuff/settings/variables/actions'
+            echo 'and add the 11 variables above (Variables tab, not Secrets). Copy the values'
+            echo 'from the local C:\AI-Programmi\freebuff\repo\.env.local file, then re-run this job.'
+            exit 1
+          fi
+          wc -l .env.local
+
+      - name: Install and build fixed binary
+        shell: bash
+        run: |
+          bun install
+          VER=$(curl -s --max-time 20 https://registry.npmjs.org/freebuff/latest | grep -oE '"version":"[^"]+"' | head -1 | cut -d'"' -f4)
+          if [ -z "$VER" ]; then
+            echo '::warning::npm lookup failed, falling back to 0.0.0-dev.'
+            VER='0.0.0'
+          fi
+          echo "BUILD_VER=$VER-dev" >> "$GITHUB_ENV"
+          bun freebuff/cli/build.ts "$VER-dev"
+
+      - name: Verify binary
+        shell: bash
+        run: |
+          cli/bin/freebuff.exe --version | tee /tmp/ver.log
+          grep -q "$BUILD_VER" /tmp/ver.log
+          cli/bin/freebuff.exe --smoke-tree-sitter > /tmp/smoke.log 2>&1
+          cat /tmp/smoke.log
+          grep -q 'smoke ok' /tmp/smoke.log
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          rm -rf release-assets && mkdir release-assets
+          cp cli/bin/freebuff.exe release-assets/freebuff-fixed.exe
+          cp cli/bin/tree-sitter.wasm release-assets/tree-sitter.wasm
+          printf '@echo off\r\n"%%~dp0freebuff-fixed.exe" %%*\r\n' > release-assets/freeb.bat
+          cat > release-assets/INSTALL.txt <<'EOF'
+          freeb (fixed freebuff) — quick install
+          1. Unzip this folder to C:\Tools\freebuff-fixed (keep freebuff-fixed.exe and tree-sitter.wasm together).
+          2. Optional: put the folder on PATH, or copy freeb.bat somewhere on PATH.
+          3. Run: freebuff-fixed.exe --cwd <your-project>   (or: freeb --cwd <your-project>)
+          Built automatically from the newest upstream code + the MCP schema fix (issue #1306).
+          Retires itself when upstream merges the fix.
+          EOF
+          (cd release-assets && sha256sum freebuff-fixed.exe tree-sitter.wasm freeb.bat INSTALL.txt > SHA256SUMS.txt)
+          (cd release-assets && 7z a ../freeb-windows-x64.zip freebuff-fixed.exe tree-sitter.wasm freeb.bat INSTALL.txt SHA256SUMS.txt)
+          ls -la release-assets freeb-windows-x64.zip
+
+      - name: Publish rolling release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.rebase-test-push.outputs.upstream }}
+          FIX_SHA: ${{ needs.rebase-test-push.outputs.sha }}
+        run: |
+          cat > /tmp/notes.md <<EOF
+          Fixed build for strict models (upstream issue #1306): MCP tool parameters arrive intact.
+          No login needed to download; freebuff login needed to use.
+
+          - Binary version: $BUILD_VER (tracks the latest upstream release)
+          - Upstream base: $UPSTREAM_SHA
+          - Fix commit: $FIX_SHA
+          - Built: $(date -u '+%Y-%m-%d %H:%M UTC')
+          - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Install: download freeb-windows-x64.zip, unzip (keep both files together),
+          run freebuff-fixed.exe --cwd <project>. Details in INSTALL.txt.
+
+          This release is rebuilt automatically (every 12h) from the newest upstream code
+          plus the fix, only when rebase and tests pass. It retires itself when upstream
+          merges the fix.
+          EOF
+          gh release delete fix-1306-latest --yes --cleanup-tag || true
+          gh release create fix-1306-latest \
+            --title "fix-1306 latest — v$BUILD_VER (upstream ${UPSTREAM_SHA:0:7} + fix ${FIX_SHA:0:7})" \
+            --notes-file /tmp/notes.md \
+            freeb-windows-x64.zip \
+            release-assets/freebuff-fixed.exe \
+            release-assets/tree-sitter.wasm \
+            release-assets/SHA256SUMS.txt
