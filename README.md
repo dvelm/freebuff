@@ -3,7 +3,7 @@
 > **This fork: MCP tools work with any model.** Ready-to-run fixed builds, no build needed.
 >
 > **Use it in 3 steps:**
-> 1. Download `freeb-windows-x64.zip` from the latest [`fix-1306-latest` release](../../releases/tag/fix-1306-latest) and unzip it anywhere.
+> 1. Download `freeb-windows-x64.zip` from the **`fix-1306-latest` release** (see Releases in the right sidebar) and unzip it anywhere.
 > 2. Double-click `install.bat` (puts `freeb` on your command line, no admin needed), then open a NEW terminal.
 > 3. Run `freeb --cwd <your-project>`.
 >
