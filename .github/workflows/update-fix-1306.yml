@@ -31,6 +31,11 @@ on:
   schedule:
     - cron: '0 */12 * * *'
   workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Rebuild + publish the release even without new upstream commits'
+        type: boolean
+        default: false
   push:
     branches: [fix-1306]
 
@@ -47,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      NTOPIC: dvelm-freebuff-fix1306
+      NTOPIC: ${{ github.repository_owner }}-freebuff-fix1306
     outputs:
       merged: ${{ steps.upstream.outputs.merged }}
       pushed: ${{ steps.push.outputs.pushed }}
@@ -250,7 +255,7 @@ jobs:
 
   build-release:
     needs: rebase-test-push
-    if: needs.rebase-test-push.outputs.merged != 'true' && (needs.rebase-test-push.outputs.pushed == 'true' || needs.rebase-test-push.outputs.have_release != 'true')
+    if: needs.rebase-test-push.outputs.merged != 'true' && (needs.rebase-test-push.outputs.pushed == 'true' || needs.rebase-test-push.outputs.have_release != 'true' || inputs.force_release)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -268,6 +273,7 @@ jobs:
       - name: Write prod env file from Actions variables
         shell: bash
         env:
+          SETTINGS_URL: ${{ github.server_url }}/${{ github.repository }}/settings/variables/actions
           NEXT_PUBLIC_CB_ENVIRONMENT: ${{ vars.NEXT_PUBLIC_CB_ENVIRONMENT }}
           NEXT_PUBLIC_CODEBUFF_APP_URL: ${{ vars.NEXT_PUBLIC_CODEBUFF_APP_URL }}
           NEXT_PUBLIC_FREEBUFF_APP_URL: ${{ vars.NEXT_PUBLIC_FREEBUFF_APP_URL }}
@@ -292,9 +298,9 @@ jobs:
             fi
           done
           if [ "$missing" != 0 ]; then
-            echo 'One-time setup: open https://github.com/dvelm/freebuff/settings/variables/actions'
+            echo "One-time setup: open $SETTINGS_URL"
             echo 'and add the 11 variables above (Variables tab, not Secrets). Copy the values'
-            echo 'from the local C:\AI-Programmi\freebuff\repo\.env.local file, then re-run this job.'
+            echo 'from the NEXT_PUBLIC_* lines of your local repo .env.local file, then re-run this job.'
             exit 1
           fi
           wc -l .env.local
@@ -327,16 +333,63 @@ jobs:
           cp cli/bin/freebuff.exe release-assets/freebuff-fixed.exe
           cp cli/bin/tree-sitter.wasm release-assets/tree-sitter.wasm
           printf '@echo off\r\n"%%~dp0freebuff-fixed.exe" %%*\r\n' > release-assets/freeb.bat
+          cat > release-assets/install.bat <<'BAT_EOF'
+          @echo off
+          rem freeb installer: copies this fixed build into %USERPROFILE%\.local\bin
+          rem and puts that folder on your user PATH if needed. Just double-click.
+          rem No admin rights needed. Re-running updates an existing install.
+          setlocal
+          set "SRC=%~dp0"
+          set "SRC=%SRC:~0,-1%"
+          set "DEST=%USERPROFILE%\.local\bin"
+          if not exist "%SRC%\freebuff-fixed.exe" goto :nosrc
+          if not exist "%SRC%\tree-sitter.wasm" goto :nosrc
+          if not exist "%DEST%" mkdir "%DEST%"
+          copy /y "%SRC%\freebuff-fixed.exe" "%DEST%\" >nul
+          if errorlevel 1 goto :copyfail
+          copy /y "%SRC%\tree-sitter.wasm" "%DEST%\" >nul
+          if errorlevel 1 goto :copyfail
+          copy /y "%SRC%\freeb.bat" "%DEST%\" >nul
+          copy /y "%SRC%\install.bat" "%DEST%\" >nul
+          "%DEST%\freebuff-fixed.exe" --version
+          if errorlevel 1 goto :runfail
+          echo %PATH% | find /i "%DEST%" >nul
+          if not errorlevel 1 goto :ready
+          echo %DEST% is not on PATH yet - adding it for future terminals...
+          powershell -NoProfile -Command "$p=[Environment]::GetEnvironmentVariable("Path","User"); $d=$env:USERPROFILE+"\.local\bin"; if(($p -split ";") -notcontains $d){[Environment]::SetEnvironmentVariable("Path",($p+";"+$d),"User")}"
+          echo Done. Close and REOPEN your terminal, then run: freeb --cwd ^<your-project^>
+          goto :end
+          :ready
+          echo freeb is ready in this and future terminals. Run: freeb --cwd ^<your-project^>
+          goto :end
+          :nosrc
+          echo ERROR: freebuff-fixed.exe or tree-sitter.wasm not found next to install.bat.
+          echo Unzip the whole release folder first, then double-click install.bat inside it.
+          pause
+          exit /b 1
+          :copyfail
+          echo ERROR: copy failed. Check disk space and permissions for %DEST%.
+          pause
+          exit /b 1
+          :runfail
+          echo ERROR: installed binary failed to run.
+          pause
+          exit /b 1
+          :end
+          pause
+          BAT_EOF
+          sed -i 's/$/\r/' release-assets/install.bat
           cat > release-assets/INSTALL.txt <<'EOF'
-          freeb (fixed freebuff) — quick install
-          1. Unzip this folder to C:\Tools\freebuff-fixed (keep freebuff-fixed.exe and tree-sitter.wasm together).
-          2. Optional: put the folder on PATH, or copy freeb.bat somewhere on PATH.
-          3. Run: freebuff-fixed.exe --cwd <your-project>   (or: freeb --cwd <your-project>)
-          Built automatically from the newest upstream code + the MCP schema fix (issue #1306).
-          Retires itself when upstream merges the fix.
+          freeb (fixed freebuff) - install
+          EASIEST: unzip, then double-click install.bat. It copies the build into
+          %USERPROFILE%\.local\bin and puts that folder on PATH if needed (no admin
+          rights). Then open a NEW terminal and run:
+            freeb --cwd <your-project>
+          MANUAL: copy freebuff-fixed.exe + tree-sitter.wasm + freeb.bat to any folder
+          on PATH (keep them together), then run freeb --cwd <project>.
           EOF
-          (cd release-assets && sha256sum freebuff-fixed.exe tree-sitter.wasm freeb.bat INSTALL.txt > SHA256SUMS.txt)
-          (cd release-assets && 7z a ../freeb-windows-x64.zip freebuff-fixed.exe tree-sitter.wasm freeb.bat INSTALL.txt SHA256SUMS.txt)
+          (cd release-assets && sha256sum freebuff-fixed.exe tree-sitter.wasm freeb.bat install.bat INSTALL.txt > SHA256SUMS.txt)
+          (cd release-assets && 7z a ../freeb-windows-x64.zip freebuff-fixed.exe tree-sitter.wasm freeb.bat install.bat INSTALL.txt SHA256SUMS.txt)
           ls -la release-assets freeb-windows-x64.zip
 
       - name: Publish rolling release
@@ -356,8 +409,10 @@ jobs:
           - Built: $(date -u '+%Y-%m-%d %H:%M UTC')
           - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-          Install: download freeb-windows-x64.zip, unzip (keep both files together),
-          run freebuff-fixed.exe --cwd <project>. Details in INSTALL.txt.
+          Install: download freeb-windows-x64.zip, unzip, double-click install.bat
+          (copies everything to %USERPROFILE%\.local\bin and fixes PATH, no admin),
+          then open a new terminal and run freeb --cwd <project>. Prefer manual
+          setup? See INSTALL.txt in the zip.
 
           This release is rebuilt automatically (every 12h) from the newest upstream code
           plus the fix, only when rebase and tests pass. It retires itself when upstream
@@ -370,4 +425,5 @@ jobs:
             freeb-windows-x64.zip \
             release-assets/freebuff-fixed.exe \
             release-assets/tree-sitter.wasm \
+            release-assets/install.bat \
             release-assets/SHA256SUMS.txt
