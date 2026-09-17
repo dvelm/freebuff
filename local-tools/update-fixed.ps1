@@ -1,4 +1,4 @@
-# Update fixed freebuff build, fully automatic: sync fix-1306 from the fork
+﻿# Update fixed freebuff build, fully automatic: sync fix-1306 from the fork
 # (a GitHub workflow there keeps it rebased onto latest upstream main and only
 # pushes when rebase + tests pass), then retest, rebuild (skipped when already
 # current), reinstall freeb, verify.
@@ -7,10 +7,13 @@
 #   powershell -ExecutionPolicy Bypass -File C:\AI-Programmi\freebuff\update-fixed.ps1
 #
 # Afterwards just use it:  freeb --cwd <project>
+#
+# --- CONFIG: machine-specific paths (edit these 2 lines to adopt this script)
+$repo = 'C:\AI-Programmi\freebuff\repo'   # local clone of your fork (branch fix-1306)
+$installDir = 'C:\Tools\freebuff-fixed'   # where the fixed exe + wasm get installed
+# --- end CONFIG --------------------------------------------------------------
 $ErrorActionPreference = 'Stop'
 $env:Path = "$env:USERPROFILE\.bun\bin;" + $env:Path
-$repo = 'C:\AI-Programmi\freebuff\repo'
-$installDir = 'C:\Tools\freebuff-fixed'
 $fixedExe = "$installDir\freebuff-fixed.exe"
 $fixedWasm = "$installDir\tree-sitter.wasm"
 $stampFile = "$installDir\.built-commit"
@@ -47,7 +50,7 @@ if ($dirtyUnstaged -or $dirtyStaged) { throw "Working tree has uncommitted conte
 # (not content diffs) for its clean-tree check, and with core.autocrlf=true
 # status keeps flagging e.g. mapping-contract-server.ts as ' M' after every
 # rebase even though its content diff is empty (worktree bytes hash exactly to
-# the HEAD blob; the flag is only the CRLF-roundtrip stat expectation —
+# the HEAD blob; the flag is only the CRLF-roundtrip stat expectation -
 # "LF will be replaced by CRLF the next time Git touches it"). Checking out a
 # content-clean file cannot lose work (diff is empty by the gate above); it
 # just refreshes stat and materializes CRLF per repo policy, letting rebase
@@ -73,7 +76,7 @@ if ($LASTEXITCODE -ne 0) { throw 'git fetch fork failed (offline?). Aborting.' }
 git fetch origin
 if ($LASTEXITCODE -ne 0) { throw 'git fetch origin failed (offline?). Aborting.' }
 # Retire check: if upstream main already contains the fix, the fork branch is
-# obsolete — say so instead of building stale code. (Captured silently: the
+# obsolete - say so instead of building stale code. (Captured silently: the
 # not-present case prints a fatal to stderr, which must not pollute the log.)
 $oldEAPr = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
@@ -101,7 +104,22 @@ if ($head -ne $forkTip) {
     Write-Output "Local branch is $n commit(s) ahead of the fork; keeping local (push them to the fork if they should be shared)."
   }
   else {
-    throw 'Local fix-1306 and fork/fix-1306 diverged. Reconcile manually (git log --oneline --graph HEAD fork/fix-1306) and re-run. Aborting.'
+    # Diverged: the normal case after any upstream update, because the workflow
+    # force-pushes the rebased stack (same content, new hashes). If the local
+    # side adds no unique patch (git cherry shows no '+' lines), every local
+    # commit is already contained in the fork tip, so resetting is lossless
+    # (abandoned duplicates stay in the reflog). Anything truly unique aborts.
+    # Safe: step 0 already guaranteed no uncommitted worktree changes.
+    $cherry = git cherry fork/fix-1306 HEAD
+    $unique = @($cherry | Where-Object { $_ -match '^\+ ' })
+    if ($unique.Count -eq 0) {
+      git reset --hard fork/fix-1306
+      if ($LASTEXITCODE -ne 0) { throw 'Reset to fork/fix-1306 failed. Aborting.' }
+      Write-Output "Synced to fork fix-1306 ($forkTip) - local replay matched the rebased stack."
+    }
+    else {
+      throw "Local fix-1306 has $($unique.Count) unique commit(s) not in fork/fix-1306. Reconcile manually (git log --oneline --graph HEAD fork/fix-1306) and re-run. Aborting."
+    }
   }
 }
 else {
@@ -187,6 +205,6 @@ $ErrorActionPreference = $oldEAP4
 $smokeText = (Out-NativeText $smokeOut) -join "`n"
 if (($smokeCode -ne 0) -or ($smokeText -notmatch 'smoke ok')) { throw "Installed freeb FAILED its tree-sitter smoke test. Aborting.`n$smokeText" }
 Write-Output 'tree-sitter smoke ok.'
-if (-not (Get-Command freeb -ErrorAction SilentlyContinue)) { Write-Warning 'freeb launcher not found on PATH. Add C:\Users\lnxku\.local\bin to PATH, or run C:\Tools\freebuff-fixed\freebuff-fixed.exe directly.' }
+if (-not (Get-Command freeb -ErrorAction SilentlyContinue)) { Write-Warning 'freeb launcher not found on PATH. Put freeb.bat on PATH, or run the installed freebuff-fixed.exe directly.' }
 Write-Output 'OK: fix-1306 synced from fork, tested, rebuilt, installed. Restart any running freeb session.'
 Write-Output 'Use it: freeb --cwd <project>'
