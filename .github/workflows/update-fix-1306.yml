@@ -395,8 +395,20 @@ jobs:
           MANUAL: copy freebuff-fixed.exe + tree-sitter.wasm + freeb.bat to any folder
           on PATH (keep them together), then run freeb --cwd <project>.
           EOF
-          (cd release-assets && sha256sum freebuff-fixed.exe tree-sitter.wasm freeb.bat install.bat INSTALL.txt > SHA256SUMS.txt)
-          (cd release-assets && 7z a ../freeb-windows-x64.zip freebuff-fixed.exe tree-sitter.wasm freeb.bat install.bat INSTALL.txt SHA256SUMS.txt)
+          ASSETS=(freebuff-fixed.exe tree-sitter.wasm freeb.bat install.bat INSTALL.txt)
+          git fetch origin main >/dev/null 2>&1 || true
+          if git cat-file -e origin/main:local-tools/update-fixed.ps1 2>/dev/null && git cat-file -e origin/main:local-tools/update-fixed.bat 2>/dev/null; then
+            git show origin/main:local-tools/update-fixed.ps1 > release-assets/update-fixed.ps1
+            git show origin/main:local-tools/update-fixed.bat > release-assets/update-fixed.bat
+            sed -i 's/$/\r/' release-assets/update-fixed.ps1 release-assets/update-fixed.bat
+            ASSETS+=(update-fixed.ps1 update-fixed.bat)
+            echo 'HAVE_UPDATER=true' >> "$GITHUB_ENV"
+          else
+            echo '::warning::updater scripts not found on main; shipping without them'
+            echo 'HAVE_UPDATER=false' >> "$GITHUB_ENV"
+          fi
+          (cd release-assets && sha256sum "${ASSETS[@]}" > SHA256SUMS.txt)
+          (cd release-assets && 7z a ../freeb-windows-x64.zip "${ASSETS[@]}" SHA256SUMS.txt)
           ls -la release-assets freeb-windows-x64.zip
 
       - name: Publish rolling release
@@ -421,16 +433,19 @@ jobs:
           then open a new terminal and run freeb --cwd <project>. Prefer manual
           setup? See INSTALL.txt in the zip.
 
+          Maintainers: update-fixed.bat + update-fixed.ps1 (attached alongside the
+          zip when available) rebuild everything from source on your machine.
+
           This release is rebuilt automatically (every 12h) from the newest upstream code
           plus the fix, only when rebase and tests pass. It retires itself when upstream
           merges the fix.
           EOF
+          FILES=(freeb-windows-x64.zip release-assets/freebuff-fixed.exe release-assets/tree-sitter.wasm release-assets/install.bat release-assets/SHA256SUMS.txt)
+          if [ "${HAVE_UPDATER:-false}" = true ]; then
+            FILES+=(release-assets/update-fixed.ps1 release-assets/update-fixed.bat)
+          fi
           gh release delete fix-1306-latest --yes --cleanup-tag || true
           gh release create fix-1306-latest \
             --title "fix-1306 latest — v$BUILD_VER (upstream ${UPSTREAM_SHA:0:7} + fix ${FIX_SHA:0:7})" \
             --notes-file /tmp/notes.md \
-            freeb-windows-x64.zip \
-            release-assets/freebuff-fixed.exe \
-            release-assets/tree-sitter.wasm \
-            release-assets/install.bat \
-            release-assets/SHA256SUMS.txt
+            "${FILES[@]}"
