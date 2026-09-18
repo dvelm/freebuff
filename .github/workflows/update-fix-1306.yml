@@ -96,8 +96,7 @@ jobs:
           fi
           EOF
           chmod +x /tmp/open-issue.sh
-          cat > /tmp/notify.sh <<'EOF'
-          #!/bin/bash
+          cat > /tmp/notify.sh <<'EOF'          #!/bin/bash
           # notify.sh <title> <message> — best-effort push notification via
           # ntfy.sh to $NTOPIC. Never fails the step.
           title="$1"; message="$2"
@@ -107,6 +106,25 @@ jobs:
           echo "notify attempted: $title"
           EOF
           chmod +x /tmp/notify.sh
+
+      - name: Verify main mirror is in sync (advisory)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch origin main >/dev/null 2>&1 || true
+          if git diff --quiet origin/main -- .github/workflows/update-fix-1306.yml 2>/dev/null; then
+            echo 'Mirror in sync.'
+          else
+            {
+              echo 'The update-fix-1306.yml copy on main differs from fix-1306.'
+              echo 'Scheduled runs execute the main copy, so stale mirrors regress'
+              echo 'releases. Mirror it: on main, run'
+              echo '`git checkout fix-1306 -- .github/workflows/update-fix-1306.yml`,'
+              echo 'commit and push.'
+            } > /tmp/drift.md
+            /tmp/open-issue.sh '[auto-update] workflow mirror drifted (main vs fix-1306)' /tmp/drift.md
+            /tmp/notify.sh 'freeb: workflow mirror drifted' 'main copy of update-fix-1306.yml differs from fix-1306; scheduled releases may regress. See open issue.'
+          fi
 
       - name: Track upstream and inspect PR state
         id: upstream
