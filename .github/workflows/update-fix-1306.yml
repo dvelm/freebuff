@@ -58,7 +58,7 @@ jobs:
       pushed: ${{ steps.push.outputs.pushed }}
       sha: ${{ steps.push.outputs.sha }}
       upstream: ${{ steps.upstream.outputs.upstream }}
-      have_release: ${{ steps.push.outputs.have_release }}
+      need_release: ${{ steps.push.outputs.need_release }}
     steps:
       - name: Check out fix-1306
         uses: actions/checkout@v4
@@ -96,8 +96,7 @@ jobs:
           fi
           EOF
           chmod +x /tmp/open-issue.sh
-          cat > /tmp/notify.sh <<'EOF'
-          #!/bin/bash
+          cat > /tmp/notify.sh <<'EOF'          #!/bin/bash
           # notify.sh <title> <message> — best-effort push notification via
           # ntfy.sh to $NTOPIC. Never fails the step.
           title="$1"; message="$2"
@@ -107,6 +106,25 @@ jobs:
           echo "notify attempted: $title"
           EOF
           chmod +x /tmp/notify.sh
+
+      - name: Verify main mirror is in sync (advisory)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch origin main >/dev/null 2>&1 || true
+          if git diff --quiet origin/main -- .github/workflows/update-fix-1306.yml 2>/dev/null; then
+            echo 'Mirror in sync.'
+          else
+            {
+              echo 'The update-fix-1306.yml copy on main differs from fix-1306.'
+              echo 'Scheduled runs execute the main copy, so stale mirrors regress'
+              echo 'releases. Mirror it: on main, run'
+              echo '`git checkout fix-1306 -- .github/workflows/update-fix-1306.yml`,'
+              echo 'commit and push.'
+            } > /tmp/drift.md
+            /tmp/open-issue.sh '[auto-update] workflow mirror drifted (main vs fix-1306)' /tmp/drift.md
+            /tmp/notify.sh 'freeb: workflow mirror drifted' 'main copy of update-fix-1306.yml differs from fix-1306; scheduled releases may regress. See open issue.'
+          fi
 
       - name: Track upstream and inspect PR state
         id: upstream
@@ -234,8 +252,6 @@ jobs:
       - name: Push rebased branch
         id: push
         if: steps.upstream.outputs.merged != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           old=$(git rev-parse origin/fix-1306)
           new=$(git rev-parse HEAD)
@@ -247,15 +263,24 @@ jobs:
             echo 'pushed=true' >> "$GITHUB_OUTPUT"
           fi
           echo "sha=$new" >> "$GITHUB_OUTPUT"
-          if gh release view fix-1306-latest >/dev/null 2>&1; then
-            echo 'have_release=true' >> "$GITHUB_OUTPUT"
+          # A release is needed whenever the rolling tag does not point at the
+          # current tip (covers workflow-driven rebases AND directly pushed
+          # commits alike). Unresolvable tag also means "needed". ls-remote
+          # reads remote state without touching local refs.
+          rel=$(git ls-remote origin 'refs/tags/fix-1306-latest' | grep '\^{}' | cut -f1)
+          if [ -z "$rel" ]; then
+            rel=$(git ls-remote origin 'refs/tags/fix-1306-latest' | head -1 | cut -f1)
+          fi
+          if [ -z "$rel" ]; then rel=none; fi
+          if [ "$new" = "$rel" ]; then
+            echo 'need_release=false' >> "$GITHUB_OUTPUT"
           else
-            echo 'have_release=false' >> "$GITHUB_OUTPUT"
+            echo 'need_release=true' >> "$GITHUB_OUTPUT"
           fi
 
   build-release:
     needs: rebase-test-push
-    if: needs.rebase-test-push.outputs.merged != 'true' && (needs.rebase-test-push.outputs.pushed == 'true' || needs.rebase-test-push.outputs.have_release != 'true' || inputs.force_release)
+    if: needs.rebase-test-push.outputs.merged != 'true' && (needs.rebase-test-push.outputs.need_release == 'true' || inputs.force_release)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -381,15 +406,36 @@ jobs:
           sed -i 's/$/\r/' release-assets/install.bat
           cat > release-assets/INSTALL.txt <<'EOF'
           freeb (fixed freebuff) - install
-          EASIEST: unzip, then double-click install.bat. It copies the build into
+          EASIEST: unzip, then double-click install.bat (or run bash install.sh).
+          It copies the build into
           %USERPROFILE%\.local\bin and puts that folder on PATH if needed (no admin
           rights). Then open a NEW terminal and run:
             freeb --cwd <your-project>
           MANUAL: copy freebuff-fixed.exe + tree-sitter.wasm + freeb.bat to any folder
           on PATH (keep them together), then run freeb --cwd <project>.
           EOF
-          (cd release-assets && sha256sum freebuff-fixed.exe tree-sitter.wasm freeb.bat install.bat INSTALL.txt > SHA256SUMS.txt)
-          (cd release-assets && 7z a ../freeb-windows-x64.zip freebuff-fixed.exe tree-sitter.wasm freeb.bat install.bat INSTALL.txt SHA256SUMS.txt)
+          ASSETS=(freebuff-fixed.exe tree-sitter.wasm freeb.bat install.bat INSTALL.txt)
+          UPDATERS=(update-fixed.ps1 update-fixed.bat install.sh update.sh)
+          git fetch origin main >/dev/null 2>&1 || true
+          missing=0
+          for f in "${UPDATERS[@]}"; do
+            git cat-file -e "origin/main:local-tools/$f" 2>/dev/null || missing=1
+          done
+          if [ "$missing" = 0 ]; then
+            for f in "${UPDATERS[@]}"; do
+              git show "origin/main:local-tools/$f" > "release-assets/$f"
+            done
+            sed -i 's/$/\r/' release-assets/update-fixed.ps1 release-assets/update-fixed.bat
+            chmod +x release-assets/install.sh release-assets/update.sh || true
+            ASSETS+=("${UPDATERS[@]}")
+            echo 'HAVE_UPDATER=true' >> "$GITHUB_ENV"
+          else
+            echo '::warning::updater scripts not found on main; shipping without them'
+            echo 'HAVE_UPDATER=false' >> "$GITHUB_ENV"
+          fi
+          echo "ASSET_FILES=${ASSETS[*]}" >> "$GITHUB_ENV"
+          (cd release-assets && sha256sum "${ASSETS[@]}" > SHA256SUMS.txt)
+          (cd release-assets && 7z a ../freeb-windows-x64.zip "${ASSETS[@]}" SHA256SUMS.txt)
           ls -la release-assets freeb-windows-x64.zip
 
       - name: Publish rolling release
@@ -412,18 +458,22 @@ jobs:
           Install: download freeb-windows-x64.zip, unzip, double-click install.bat
           (copies everything to %USERPROFILE%\.local\bin and fixes PATH, no admin),
           then open a new terminal and run freeb --cwd <project>. Prefer manual
-          setup? See INSTALL.txt in the zip.
+          setup? See INSTALL.txt in the zip. Terminal users: bash install.sh does
+          the same from the command line.
+
+          Maintainers: update-fixed.bat + update-fixed.ps1 (attached alongside the
+          zip when available) rebuild everything from source on your machine.
 
           This release is rebuilt automatically (every 12h) from the newest upstream code
           plus the fix, only when rebase and tests pass. It retires itself when upstream
           merges the fix.
           EOF
+          read -ra STAGED <<< "${ASSET_FILES:-}" || true
+          FILES=(freeb-windows-x64.zip)
+          for f in "${STAGED[@]}"; do FILES+=("release-assets/$f"); done
+          FILES+=(release-assets/SHA256SUMS.txt)
           gh release delete fix-1306-latest --yes --cleanup-tag || true
           gh release create fix-1306-latest \
             --title "fix-1306 latest — v$BUILD_VER (upstream ${UPSTREAM_SHA:0:7} + fix ${FIX_SHA:0:7})" \
             --notes-file /tmp/notes.md \
-            freeb-windows-x64.zip \
-            release-assets/freebuff-fixed.exe \
-            release-assets/tree-sitter.wasm \
-            release-assets/install.bat \
-            release-assets/SHA256SUMS.txt
+            "${FILES[@]}"
