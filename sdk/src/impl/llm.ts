@@ -805,8 +805,6 @@ export async function promptAiSdkStructured<T>(
     include: { requestBody: true },
     providerOptions: params.byok ? undefined : getProviderOptions({
       ...params,
-      // COMPAT(shim-ai-sdk-v6): new SDK readonly-JSON options; identical at runtime.
-      providerOptions: params.providerOptions as unknown as ProviderMetadata | undefined,
       agentProviderOptions: params.agentProviderOptions,
       cacheDebugCorrelation: params.cacheDebugCorrelation,
     }),
