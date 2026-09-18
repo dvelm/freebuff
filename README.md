@@ -4,7 +4,7 @@
 >
 > **Use it in 3 steps:**
 > 1. Download `freeb-windows-x64.zip` from the **`fix-1306-latest` release** (see Releases in the right sidebar) and unzip it anywhere.
-> 2. Double-click `install.bat` (puts `freeb` on your command line, no admin needed), then open a NEW terminal.
+> 2. Double-click `install.bat` (or run `bash install.sh`) to put `freeb` on your command line, no admin needed. Then open a NEW terminal.
 > 3. Run `freeb --cwd <your-project>`.
 >
 > New builds appear automatically (about every 12h) whenever the upstream code changes.
