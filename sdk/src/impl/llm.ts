@@ -245,11 +245,12 @@ export async function* promptAiSdkStream(
       ...streamParams.include,
       requestBody: true,
     },
-    providerOptions: params.byok ? originalProviderOptions : getProviderOptions({
-      ...params,
-      providerOptions: originalProviderOptions,
-      agentProviderOptions: params.agentProviderOptions,
-    }),
+      providerOptions: params.byok ? originalProviderOptions : getProviderOptions({
+        ...params,
+        // COMPAT(shim-ai-sdk-v6): new SDK readonly-JSON options; identical at runtime.
+        providerOptions: originalProviderOptions as unknown as ProviderMetadata,
+        agentProviderOptions: params.agentProviderOptions,
+      }),
     // Handle tool call errors gracefully by passing them through to our validation layer
     // instead of throwing (which would halt the agent). The only special case is when
     // the tool name matches a spawnable agent - transform those to spawn_agents calls.
@@ -726,6 +727,8 @@ export async function promptAiSdk(
     },
     providerOptions: params.byok ? undefined : getProviderOptions({
       ...params,
+      // COMPAT(shim-ai-sdk-v6): new SDK readonly-JSON options; identical at runtime.
+      providerOptions: params.providerOptions as unknown as ProviderMetadata | undefined,
       agentProviderOptions: params.agentProviderOptions,
       cacheDebugCorrelation: params.cacheDebugCorrelation,
     }),
@@ -802,6 +805,8 @@ export async function promptAiSdkStructured<T>(
     include: { requestBody: true },
     providerOptions: params.byok ? undefined : getProviderOptions({
       ...params,
+      // COMPAT(shim-ai-sdk-v6): new SDK readonly-JSON options; identical at runtime.
+      providerOptions: params.providerOptions as unknown as ProviderMetadata | undefined,
       agentProviderOptions: params.agentProviderOptions,
       cacheDebugCorrelation: params.cacheDebugCorrelation,
     }),

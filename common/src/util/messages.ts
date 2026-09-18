@@ -36,7 +36,10 @@ export function toContentString(msg: ModelMessage): string {
 }
 
 export function withCacheControl<T extends object>(
-  obj: T & { providerOptions?: ProviderMetadata },
+  // COMPAT(shim-ai-sdk-v6): also accept the new SDK's provider options object
+  // (its readonly JSON no longer satisfies ProviderMetadata). Runtime shape is
+  // unchanged plain objects. Drop the union when upstream fixes their types.
+  obj: T & { providerOptions?: ProviderMetadata | object },
 ): T & { providerOptions: ProviderMetadata } {
   const wrapper = cloneDeep(obj) as T & {
     providerOptions: ProviderMetadata
@@ -135,11 +138,14 @@ function toolResultMessage(
   message: ToolMessage,
   output: Extract<ToolResultOutput, { type: 'json' }>,
 ): ModelMessageWithAuxiliaryData {
+  // COMPAT(shim-ai-sdk-v6): ToolModelMessage carries the new SDK's readonly-JSON
+  // provider options; identical at runtime. Drop the cast when upstream fixes
+  // their types.
   return cloneDeep<ToolModelMessage>({
     ...message,
     role: 'tool',
     content: [{ ...message, output, type: 'tool-result' }],
-  })
+  }) as unknown as ModelMessageWithAuxiliaryData
 }
 
 const EMPTY_TOOL_OUTPUT = { type: 'json', value: '' } as const

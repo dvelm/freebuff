@@ -639,7 +639,14 @@ export async function processStream(
       ...assistantMessages.filter(
         (message) => !claimedByInlineAgent.has(message),
       ),
-      ...filteredToolCalls.map((toolCall) => assistantMessage({ ...toolCall, type: 'tool-call' })),
+      // COMPAT(shim-ai-sdk-v6): toolCall carries the new SDK's readonly-JSON
+      // provider options; identical at runtime. Drop the cast when upstream
+      // fixes their types.
+      ...filteredToolCalls.map((toolCall) =>
+        assistantMessage({ ...toolCall, type: 'tool-call' } as unknown as Parameters<
+          typeof assistantMessage
+        >[0]),
+      ),
       ...toolResultsToAddToMessageHistory,
       ...errorMessages,
     ])
