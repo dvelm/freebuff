@@ -58,7 +58,7 @@ jobs:
       pushed: ${{ steps.push.outputs.pushed }}
       sha: ${{ steps.push.outputs.sha }}
       upstream: ${{ steps.upstream.outputs.upstream }}
-      have_release: ${{ steps.push.outputs.have_release }}
+      need_release: ${{ steps.push.outputs.need_release }}
     steps:
       - name: Check out fix-1306
         uses: actions/checkout@v4
@@ -234,8 +234,6 @@ jobs:
       - name: Push rebased branch
         id: push
         if: steps.upstream.outputs.merged != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           old=$(git rev-parse origin/fix-1306)
           new=$(git rev-parse HEAD)
@@ -247,15 +245,24 @@ jobs:
             echo 'pushed=true' >> "$GITHUB_OUTPUT"
           fi
           echo "sha=$new" >> "$GITHUB_OUTPUT"
-          if gh release view fix-1306-latest >/dev/null 2>&1; then
-            echo 'have_release=true' >> "$GITHUB_OUTPUT"
+          # A release is needed whenever the rolling tag does not point at the
+          # current tip (covers workflow-driven rebases AND directly pushed
+          # commits alike). Unresolvable tag also means "needed". ls-remote
+          # reads remote state without touching local refs.
+          rel=$(git ls-remote origin 'refs/tags/fix-1306-latest' | grep '\^{}' | cut -f1)
+          if [ -z "$rel" ]; then
+            rel=$(git ls-remote origin 'refs/tags/fix-1306-latest' | head -1 | cut -f1)
+          fi
+          if [ -z "$rel" ]; then rel=none; fi
+          if [ "$new" = "$rel" ]; then
+            echo 'need_release=false' >> "$GITHUB_OUTPUT"
           else
-            echo 'have_release=false' >> "$GITHUB_OUTPUT"
+            echo 'need_release=true' >> "$GITHUB_OUTPUT"
           fi
 
   build-release:
     needs: rebase-test-push
-    if: needs.rebase-test-push.outputs.merged != 'true' && (needs.rebase-test-push.outputs.pushed == 'true' || needs.rebase-test-push.outputs.have_release != 'true' || inputs.force_release)
+    if: needs.rebase-test-push.outputs.merged != 'true' && (needs.rebase-test-push.outputs.need_release == 'true' || inputs.force_release)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
