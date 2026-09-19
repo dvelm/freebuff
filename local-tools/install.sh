@@ -25,10 +25,21 @@ cp -f "$SRC_DIR/$EXE" "$SRC_DIR/$WASM" "$DEST/" || fail "copy failed (disk space
 [ -f "$SRC_DIR/freeb.bat" ] && cp -f "$SRC_DIR/freeb.bat" "$DEST/"
 [ -f "$SRC_DIR/install.bat" ] && cp -f "$SRC_DIR/install.bat" "$DEST/"
 [ -f "$SRC_DIR/install.sh" ] && cp -f "$SRC_DIR/install.sh" "$DEST/"
-cat > "$DEST/freeb" <<EOF
+[ -f "$SRC_DIR/freeb-launch.ps1" ] && cp -f "$SRC_DIR/freeb-launch.ps1" "$DEST/"
+[ -f "$SRC_DIR/freeb-launch.sh" ] && cp -f "$SRC_DIR/freeb-launch.sh" "$DEST/"
+# The freeb command checks for updates on start (like the original freebuff):
+# it delegates to the launcher when present, otherwise execs the exe directly.
+if [ -f "$DEST/freeb-launch.sh" ]; then
+  cat > "$DEST/freeb" <<EOF
+#!/bin/sh
+exec "$DEST/freeb-launch.sh" "\$@"
+EOF
+else
+  cat > "$DEST/freeb" <<EOF
 #!/bin/sh
 exec "$DEST/$EXE" "\$@"
 EOF
+fi
 chmod +x "$DEST/freeb"
 "$DEST/$EXE" --version >/dev/null 2>&1 || fail "installed binary failed to run."
 case ":$PATH:" in

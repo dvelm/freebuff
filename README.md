@@ -7,7 +7,7 @@
 > 2. Double-click `install.bat` (or run `bash install.sh`) to put `freeb` on your command line, no admin needed. Then open a NEW terminal.
 > 3. Run `freeb --cwd <your-project>`.
 >
-> New builds appear automatically (about every 12h) whenever the upstream code changes.
+> New builds appear automatically (about every 12h) whenever the upstream code changes; running `freeb` self-updates first when a newer release is published (offline it just starts).
 
 English | [简体中文](./README.zh-CN.md)
 
