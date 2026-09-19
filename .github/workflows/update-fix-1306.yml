@@ -357,7 +357,7 @@ jobs:
           rm -rf release-assets && mkdir release-assets
           cp cli/bin/freebuff.exe release-assets/freebuff-fixed.exe
           cp cli/bin/tree-sitter.wasm release-assets/tree-sitter.wasm
-          printf '@echo off\r\n"%%~dp0freebuff-fixed.exe" %%*\r\n' > release-assets/freeb.bat
+          printf '@echo off\r\nif exist "%%~dp0freeb-launch.ps1" (\r\n  powershell -NoProfile -ExecutionPolicy Bypass -File "%%~dp0freeb-launch.ps1" %%*\r\n) else (\r\n  "%%~dp0freebuff-fixed.exe" %%*\r\n)\r\n' > release-assets/freeb.bat
           cat > release-assets/install.bat <<'BAT_EOF'
           @echo off
           rem freeb installer: copies this fixed build into %USERPROFILE%\.local\bin
@@ -376,6 +376,8 @@ jobs:
           if errorlevel 1 goto :copyfail
           copy /y "%SRC%\freeb.bat" "%DEST%\" >nul
           copy /y "%SRC%\install.bat" "%DEST%\" >nul
+          copy /y "%SRC%\freeb-launch.ps1" "%DEST%\" >nul 2>&1
+          copy /y "%SRC%\freeb-launch.sh" "%DEST%\" >nul 2>&1
           "%DEST%\freebuff-fixed.exe" --version
           if errorlevel 1 goto :runfail
           echo %PATH% | find /i "%DEST%" >nul
@@ -413,9 +415,11 @@ jobs:
             freeb --cwd <your-project>
           MANUAL: copy freebuff-fixed.exe + tree-sitter.wasm + freeb.bat to any folder
           on PATH (keep them together), then run freeb --cwd <project>.
+          freeb auto-updates on start when a newer release is published
+          (offline it just starts).
           EOF
           ASSETS=(freebuff-fixed.exe tree-sitter.wasm freeb.bat install.bat INSTALL.txt)
-          UPDATERS=(update-fixed.ps1 update-fixed.bat install.sh update.sh)
+          UPDATERS=(update-fixed.ps1 update-fixed.bat install.sh update.sh freeb-launch.ps1 freeb-launch.sh)
           git fetch origin main >/dev/null 2>&1 || true
           missing=0
           for f in "${UPDATERS[@]}"; do
@@ -425,8 +429,8 @@ jobs:
             for f in "${UPDATERS[@]}"; do
               git show "origin/main:local-tools/$f" > "release-assets/$f"
             done
-            sed -i 's/$/\r/' release-assets/update-fixed.ps1 release-assets/update-fixed.bat
-            chmod +x release-assets/install.sh release-assets/update.sh || true
+            sed -i 's/$/\r/' release-assets/update-fixed.ps1 release-assets/update-fixed.bat release-assets/freeb-launch.ps1
+            chmod +x release-assets/install.sh release-assets/update.sh release-assets/freeb-launch.sh || true
             ASSETS+=("${UPDATERS[@]}")
             echo 'HAVE_UPDATER=true' >> "$GITHUB_ENV"
           else
@@ -460,6 +464,8 @@ jobs:
           then open a new terminal and run freeb --cwd <project>. Prefer manual
           setup? See INSTALL.txt in the zip. Terminal users: bash install.sh does
           the same from the command line.
+          freeb auto-updates on start when a newer release is published
+          (offline it just starts).
 
           Maintainers: update-fixed.bat + update-fixed.ps1 (attached alongside the
           zip when available) rebuild everything from source on your machine.
