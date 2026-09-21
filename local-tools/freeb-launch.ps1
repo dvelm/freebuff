@@ -59,6 +59,23 @@ function VersionGreater($a, $b) {
   catch { return $false }
 }
 
+# Retire check (like the workflow): is the MCP fix marker now in upstream
+# main? Loud only when merged; silent otherwise. Test with
+# FREEB_UPSTREAM_MARKER_URL. Fail-safe: offline just starts.
+$markerUrl = if ($env:FREEB_UPSTREAM_MARKER_URL) { $env:FREEB_UPSTREAM_MARKER_URL } else { 'https://raw.githubusercontent.com/CodebuffAI/freebuff/main/packages/agent-runtime/src/util/zod-safe-clone.ts' }
+try {
+  $markerResp = Invoke-WebRequest -Uri $markerUrl -TimeoutSec 15 -UseBasicParsing
+  if ($markerResp.StatusCode -eq 200) {
+    Write-Host ''
+    [console]::beep(880, 350); [console]::beep(660, 350); [console]::beep(880, 550)
+    Write-Host '*** UPSTREAM MERGED THE MCP FIX - good news ***'
+    Write-Host 'The original repo now contains this fix. You can switch to the official'
+    Write-Host 'freebuff build and retire this fork (update-fixed.bat stops building from it).'
+    Write-Host ''
+  }
+}
+catch { }
+
 $local = Get-LocalVersion
 $rel = Get-ReleaseInfo
 $force = ($env:FREEB_FORCE_UPDATE -eq '1')

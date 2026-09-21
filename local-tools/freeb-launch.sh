@@ -25,6 +25,19 @@ ver_gt() {
   return 0
 }
 
+# Retire check (like the workflow): is the MCP fix marker now in upstream
+# main? Loud only when merged; silent otherwise. Test with
+# FREEB_UPSTREAM_MARKER_URL. Fail-safe: offline just starts.
+marker_url="${FREEB_UPSTREAM_MARKER_URL:-https://raw.githubusercontent.com/CodebuffAI/freebuff/main/packages/agent-runtime/src/util/zod-safe-clone.ts}"
+marker_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$marker_url" 2>/dev/null || true)"
+if [ "$marker_code" = "200" ]; then
+  echo ''
+  echo '*** UPSTREAM MERGED THE MCP FIX - good news ***'
+  echo 'The original repo now contains this fix. You can switch to the official'
+  echo 'freebuff build and retire this fork (update.sh stops building from it).'
+  echo ''
+fi
+
 local_ver="$("$EXE" --version 2>/dev/null | head -1 | tr -d '[:space:]')"
 rel_json="$(curl -s --max-time 15 "https://api.github.com/repos/$REPO/releases/tags/$TAG" 2>/dev/null || true)"
 rel_ver="$(printf '%s\n' "$rel_json" | grep -oE 'Binary version: [0-9]+\.[0-9]+\.[0-9]+' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
