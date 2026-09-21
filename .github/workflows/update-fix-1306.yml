@@ -446,20 +446,35 @@ jobs:
           AUTO-UPDATE: freeb auto-updates on start when a newer release is published
           (offline it just starts).
           EOF
-          # Installer/launcher extras fetched from main (single source of truth).
+          # Installer/launcher extras fetched from main (single source of
+          # truth). sh scripts on every platform; bat/ps1 scripts only on the
+          # windows runner - they only ship in the windows zip, and BSD sed
+          # rejects `sed -i` without an argument (that was the macOS failure:
+          # "sed: -I or -i may not be used with stdin").
           git fetch origin main >/dev/null 2>&1 || true
           missing=0
-          for f in install.sh freeb-launch.sh update.sh update-fixed.ps1 update-fixed.bat freeb-launch.ps1; do
+          for f in install.sh freeb-launch.sh update.sh; do
             git cat-file -e "origin/main:local-tools/$f" 2>/dev/null || missing=1
           done
           if [ "$missing" = 0 ]; then
-            for f in install.sh freeb-launch.sh update.sh update-fixed.ps1 update-fixed.bat freeb-launch.ps1; do
+            for f in install.sh freeb-launch.sh update.sh; do
               git show "origin/main:local-tools/$f" > "release-assets/$f"
             done
-            sed -i 's/$/\r/' release-assets/update-fixed.ps1 release-assets/update-fixed.bat release-assets/freeb-launch.ps1
             chmod +x release-assets/install.sh release-assets/update.sh release-assets/freeb-launch.sh || true
           else
             echo '::warning::updater scripts not found on main; shipping without extras'
+          fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            missing2=0
+            for f in update-fixed.ps1 update-fixed.bat freeb-launch.ps1; do
+              git cat-file -e "origin/main:local-tools/$f" 2>/dev/null || missing2=1
+            done
+            if [ "$missing2" = 0 ]; then
+              for f in update-fixed.ps1 update-fixed.bat freeb-launch.ps1; do
+                git show "origin/main:local-tools/$f" > "release-assets/$f"
+              done
+              sed -i 's/$/\r/' release-assets/update-fixed.ps1 release-assets/update-fixed.bat release-assets/freeb-launch.ps1
+            fi
           fi
           # Platform-appropriate extras: windows zip also carries the bat/ps1
           # scripts (git-bash users included); unix zips carry only sh scripts.
@@ -559,8 +574,11 @@ jobs:
           FILES+=(SHA256SUMS.txt)
           loose_exe=$(find artifacts -name 'freebuff-fixed.exe' | head -1)
           if [ -n "$loose_exe" ]; then FILES+=("$loose_exe"); fi
-          gh release delete fix-1306-latest --yes --cleanup-tag || true
-          gh release create fix-1306-latest \
+          # -R is required: this job has no checkout, so gh cannot infer the
+          # repo from a git remote (that was the publish failure:
+          # "failed to run git: not a git repository").
+          gh release delete fix-1306-latest --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
+          gh release create fix-1306-latest -R "$GITHUB_REPOSITORY" \
             --title "fix-1306 latest — v$ver (upstream ${UPSTREAM_SHA:0:7} + fix ${FIX_SHA:0:7})" \
             --notes-file /tmp/notes.md \
             "${FILES[@]}"
