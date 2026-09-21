@@ -408,13 +408,15 @@ jobs:
           sed -i 's/$/\r/' release-assets/install.bat
           cat > release-assets/INSTALL.txt <<'EOF'
           freeb (fixed freebuff) - install
-          EASIEST: unzip, then double-click install.bat (or run bash install.sh).
-          It copies the build into
+          This build is Windows-only (freebuff-fixed.exe). macOS/Linux users:
+          use the official freebuff instead, or build from source on your machine.
+          WINDOWS - EASIEST: unzip, then double-click install.bat (or run
+          bash install.sh in git-bash). It copies the build into
           %USERPROFILE%\.local\bin and puts that folder on PATH if needed (no admin
           rights). Then open a NEW terminal and run:
             freeb --cwd <your-project>
-          MANUAL: copy freebuff-fixed.exe + tree-sitter.wasm + freeb.bat to any folder
-          on PATH (keep them together), then run freeb --cwd <project>.
+          WINDOWS - MANUAL: copy freebuff-fixed.exe + tree-sitter.wasm + freeb.bat
+          to any folder on PATH (keep them together), then run freeb --cwd <project>.
           freeb auto-updates on start when a newer release is published
           (offline it just starts).
           EOF
@@ -459,11 +461,13 @@ jobs:
           - Built: $(date -u '+%Y-%m-%d %H:%M UTC')
           - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-          Install: download freeb-windows-x64.zip, unzip, double-click install.bat
-          (copies everything to %USERPROFILE%\.local\bin and fixes PATH, no admin),
-          then open a new terminal and run freeb --cwd <project>. Prefer manual
-          setup? See INSTALL.txt in the zip. Terminal users: bash install.sh does
-          the same from the command line.
+          Install (Windows-only build): download freeb-windows-x64.zip, unzip,
+          double-click install.bat (copies everything to %USERPROFILE%\.local\bin
+          and fixes PATH, no admin), then open a new terminal and run
+          freeb --cwd <project>. Prefer manual setup? See INSTALL.txt in the zip.
+          Terminal users: bash install.sh (git-bash) does the same from the
+          command line. macOS/Linux: this build does not run on your OS - use the
+          official freebuff, or build this fork from source on your machine.
           freeb auto-updates on start when a newer release is published
           (offline it just starts).
 
