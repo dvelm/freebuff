@@ -11,7 +11,13 @@
 set -u
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST="${1:-${FREEB_DEST:-$HOME/.local/bin}}"
-EXE=freebuff-fixed.exe
+# Auto-detect the platform binary shipped next to this script (the release
+# names it per platform: freebuff-fixed.exe on Windows, freebuff-fixed-<os>-<arch>
+# on Linux/macOS).
+EXE=''
+for cand in freebuff-fixed.exe freebuff-fixed-linux-x64 freebuff-fixed-linux-arm64 freebuff-fixed-macos-arm64 freebuff-fixed-darwin-x64 freebuff-fixed-darwin-arm64 freebuff-fixed; do
+  if [ -f "$SRC_DIR/$cand" ]; then EXE="$cand"; break; fi
+done
 WASM=tree-sitter.wasm
 fail() { echo "ERROR: $1" >&2; exit 1; }
 case "$(uname -s 2>/dev/null)" in

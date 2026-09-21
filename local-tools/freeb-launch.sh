@@ -6,11 +6,16 @@
 # FREEB_FORCE_UPDATE=1.
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
-EXE="$DIR/freebuff-fixed.exe"
+# Auto-detect the platform binary next to this script (release asset names are
+# identical to the binary file names, so the auto-update download maps 1:1).
+EXE=''
+for cand in freebuff-fixed.exe freebuff-fixed-linux-x64 freebuff-fixed-linux-arm64 freebuff-fixed-macos-arm64 freebuff-fixed-darwin-x64 freebuff-fixed-darwin-arm64 freebuff-fixed; do
+  if [ -f "$DIR/$cand" ]; then EXE="$cand"; break; fi
+done
 WASM="$DIR/tree-sitter.wasm"
 REPO="${FREEB_RELEASE_REPO:-dvelm/freebuff}"
 TAG="fix-1306-latest"
-[ -f "$EXE" ] || { echo "freebuff-fixed.exe not found in $DIR"; exit 1; }
+[ -n "$EXE" ] || { echo "freebuff-fixed binary not found in $DIR"; exit 1; }
 
 file_hash() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
@@ -38,7 +43,7 @@ if [ "$marker_code" = "200" ]; then
   echo ''
 fi
 
-local_ver="$("$EXE" --version 2>/dev/null | head -1 | tr -d '[:space:]')"
+local_ver="$("$DIR/$EXE" --version 2>/dev/null | head -1 | tr -d '[:space:]')"
 rel_json="$(curl -s --max-time 15 "https://api.github.com/repos/$REPO/releases/tags/$TAG" 2>/dev/null || true)"
 rel_ver="$(printf '%s\n' "$rel_json" | grep -oE 'Binary version: [0-9]+\.[0-9]+\.[0-9]+' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
 if [ -z "$rel_ver" ]; then
@@ -60,7 +65,7 @@ if [ "$needs_update" = "1" ]; then
   mkdir -p "$TMP"
   # NOTE: -L is required - release URLs redirect, and curl without it saves a
   # 0-byte file (that was the bug: silent empty downloads).
-  exe_url="$(printf '%s\n' "$rel_json" | grep -oE '"browser_download_url": *"[^"]*freebuff-fixed\.exe"' | head -1 | sed 's/^"browser_download_url": *"//;s/"$//')"
+  exe_url="$(printf '%s\n' "$rel_json" | grep -oE "\"browser_download_url\": *\"[^\"]*/$EXE\"" | head -1 | sed 's/^"browser_download_url": *"//;s/"$//')"
   wasm_url="$(printf '%s\n' "$rel_json" | grep -oE '"browser_download_url": *"[^"]*tree-sitter\.wasm"' | head -1 | sed 's/^"browser_download_url": *"//;s/"$//')"
   sums_url="$(printf '%s\n' "$rel_json" | grep -oE '"browser_download_url": *"[^"]*SHA256SUMS\.txt"' | head -1 | sed 's/^"browser_download_url": *"//;s/"$//')"
   if curl -sL --max-time 600 "$exe_url" -o "$TMP/freebuff-fixed.exe" 2>/dev/null &&
@@ -82,7 +87,7 @@ if [ "$needs_update" = "1" ]; then
       fi
     fi
     if [ "$ok" = "1" ]; then
-      cp -f "$TMP/freebuff-fixed.exe" "$EXE" &&
+      cp -f "$TMP/freebuff-fixed.exe" "$DIR/$EXE" &&
         cp -f "$TMP/tree-sitter.wasm" "$WASM" &&
         echo "Updated to v$rel_ver-dev."
     fi
@@ -92,4 +97,4 @@ if [ "$needs_update" = "1" ]; then
   rm -rf "$TMP"
 fi
 
-exec "$EXE" "$@"
+exec "$DIR/$EXE" "$@"
