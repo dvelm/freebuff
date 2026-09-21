@@ -1,8 +1,8 @@
 # Freebuff
 
-> **This fork: MCP tools work with any model.** Ready-to-run fixed builds, no build needed.
+> **This fork: MCP tools work with any model.** Ready-to-run fixed builds, no build needed. Windows-only build (macOS/Linux: use the official freebuff, or build this fork from source).
 >
-> **Use it in 3 steps:**
+> **Use it in 3 steps (Windows):**
 > 1. Download `freeb-windows-x64.zip` from the **`fix-1306-latest` release** (see Releases in the right sidebar) and unzip it anywhere.
 > 2. Double-click `install.bat` (or run `bash install.sh`) to put `freeb` on your command line, no admin needed. Then open a NEW terminal.
 > 3. Run `freeb --cwd <your-project>`.
