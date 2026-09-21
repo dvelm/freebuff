@@ -427,9 +427,11 @@ jobs:
           :end
           pause
           BAT_EOF
-          sed -i 's/$/\r/' release-assets/install.bat
-          # freeb.bat + install.bat are Windows-only; drop them on unix runners.
-          if [ "$RUNNER_OS" != Windows ]; then rm -f release-assets/freeb.bat release-assets/install.bat; fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            sed -i 's/$/\r/' release-assets/install.bat
+          else
+            rm -f release-assets/freeb.bat release-assets/install.bat
+          fi
           cat > release-assets/INSTALL.txt <<'EOF'
           freeb (fixed freebuff) - install
           Pick the zip for your platform:
