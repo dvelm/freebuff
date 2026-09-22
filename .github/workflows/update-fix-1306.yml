@@ -107,23 +107,33 @@ jobs:
           EOF
           chmod +x /tmp/notify.sh
 
-      - name: Verify main mirror is in sync (advisory)
+      - name: Self-heal workflow mirror (main vs fix-1306)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Scheduled runs execute the workflow file from the default branch
+          # (main). A stale main copy silently regresses releases (that is how
+          # the per-platform matrix briefly vanished from the release: the
+          # scheduled run used the pre-matrix copy). So instead of only
+          # reporting drift, heal it: push the fix-1306 copy to main.
           git fetch origin main >/dev/null 2>&1 || true
           if git diff --quiet origin/main -- .github/workflows/update-fix-1306.yml 2>/dev/null; then
             echo 'Mirror in sync.'
           else
+            echo 'Mirror drifted: updating the main copy from fix-1306...'
+            cp .github/workflows/update-fix-1306.yml /tmp/fixed-yml
+            git checkout -B mirror-main origin/main
+            cp /tmp/fixed-yml .github/workflows/update-fix-1306.yml
+            git add .github/workflows/update-fix-1306.yml
+            git commit -m 'Sync update-fix-1306 workflow mirror (auto-heal)'
+            git push origin HEAD:main
+            git checkout -B fix-1306 origin/fix-1306
             {
-              echo 'The update-fix-1306.yml copy on main differs from fix-1306.'
-              echo 'Scheduled runs execute the main copy, so stale mirrors regress'
-              echo 'releases. Mirror it: on main, run'
-              echo '`git checkout fix-1306 -- .github/workflows/update-fix-1306.yml`,'
-              echo 'commit and push.'
+              echo 'The update-fix-1306.yml copy on main was stale (scheduled runs'
+              echo 'execute the main copy). It was automatically updated from fix-1306.'
             } > /tmp/drift.md
-            /tmp/open-issue.sh '[auto-update] workflow mirror drifted (main vs fix-1306)' /tmp/drift.md
-            /tmp/notify.sh 'freeb: workflow mirror drifted' 'main copy of update-fix-1306.yml differs from fix-1306; scheduled releases may regress. See open issue.'
+            /tmp/open-issue.sh '[auto-update] workflow mirror drifted (auto-healed)' /tmp/drift.md
+            /tmp/notify.sh 'freeb: workflow mirror auto-healed' 'main copy of update-fix-1306.yml was stale; updated from fix-1306.'
           fi
 
       - name: Track upstream and inspect PR state
@@ -281,7 +291,23 @@ jobs:
   build-release:
     needs: rebase-test-push
     if: needs.rebase-test-push.outputs.merged != 'true' && (needs.rebase-test-push.outputs.need_release == 'true' || inputs.force_release)
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            binary_name: freebuff-fixed
+            zip_name: freeb-windows-x64.zip
+            platform_label: windows-x64
+          - os: ubuntu-latest
+            binary_name: freebuff-fixed-linux-x64
+            zip_name: freeb-linux-x64.zip
+            platform_label: linux-x64
+          - os: macos-latest
+            binary_name: freebuff-fixed-macos-arm64
+            zip_name: freeb-macos-arm64.zip
+            platform_label: macos-arm64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - name: Check out green commit
@@ -340,22 +366,28 @@ jobs:
             VER='0.0.0'
           fi
           echo "BUILD_VER=$VER-dev" >> "$GITHUB_ENV"
-          bun freebuff/cli/build.ts "$VER-dev"
+          # FREEBUFF_MODE=true replaces the wrapper (freebuff/cli/build.ts). The
+          # binary name doubles as the release asset name (identity mapping the
+          # auto-update launchers rely on), and the build script auto-installs
+          # missing native bundles (musl siblings included).
+          FREEBUFF_MODE=true bun cli/scripts/build-binary.ts "${{ matrix.binary_name }}" "$VER-dev"
 
       - name: Verify binary
         shell: bash
         run: |
-          cli/bin/freebuff.exe --version | tee /tmp/ver.log
+          if [ "$RUNNER_OS" = Windows ]; then exe_file="${{ matrix.binary_name }}.exe"; else exe_file="${{ matrix.binary_name }}"; fi
+          cli/bin/$exe_file --version | tee /tmp/ver.log
           grep -q "$BUILD_VER" /tmp/ver.log
-          cli/bin/freebuff.exe --smoke-tree-sitter > /tmp/smoke.log 2>&1
+          cli/bin/$exe_file --smoke-tree-sitter > /tmp/smoke.log 2>&1
           cat /tmp/smoke.log
           grep -q 'smoke ok' /tmp/smoke.log
 
-      - name: Stage release assets
+      - name: Stage platform assets
         shell: bash
         run: |
           rm -rf release-assets && mkdir release-assets
-          cp cli/bin/freebuff.exe release-assets/freebuff-fixed.exe
+          if [ "$RUNNER_OS" = Windows ]; then exe_file="${{ matrix.binary_name }}.exe"; else exe_file="${{ matrix.binary_name }}"; fi
+          cp "cli/bin/$exe_file" "release-assets/$exe_file"
           cp cli/bin/tree-sitter.wasm release-assets/tree-sitter.wasm
           printf '@echo off\r\nif exist "%%~dp0freeb-launch.ps1" (\r\n  powershell -NoProfile -ExecutionPolicy Bypass -File "%%~dp0freeb-launch.ps1" %%*\r\n) else (\r\n  "%%~dp0freebuff-fixed.exe" %%*\r\n)\r\n' > release-assets/freeb.bat
           cat > release-assets/install.bat <<'BAT_EOF'
@@ -405,81 +437,160 @@ jobs:
           :end
           pause
           BAT_EOF
-          sed -i 's/$/\r/' release-assets/install.bat
+          if [ "$RUNNER_OS" = Windows ]; then
+            sed -i 's/$/\r/' release-assets/install.bat
+          else
+            rm -f release-assets/freeb.bat release-assets/install.bat
+          fi
           cat > release-assets/INSTALL.txt <<'EOF'
           freeb (fixed freebuff) - install
-          EASIEST: unzip, then double-click install.bat (or run bash install.sh).
-          It copies the build into
-          %USERPROFILE%\.local\bin and puts that folder on PATH if needed (no admin
-          rights). Then open a NEW terminal and run:
+          Pick the zip for your platform:
+            windows-x64  ->  freeb-windows-x64.zip
+            linux-x64    ->  freeb-linux-x64.zip
+            macos-arm64  ->  freeb-macos-arm64.zip (Apple Silicon; Intel Macs: build from source)
+          WINDOWS: unzip, double-click install.bat (or run bash install.sh in git-bash).
+          It copies the build into %USERPROFILE%\.local\bin and puts that folder on PATH
+          if needed (no admin rights). Then open a NEW terminal and run:
             freeb --cwd <your-project>
-          MANUAL: copy freebuff-fixed.exe + tree-sitter.wasm + freeb.bat to any folder
-          on PATH (keep them together), then run freeb --cwd <project>.
-          freeb auto-updates on start when a newer release is published
+          LINUX / MACOS: unzip, then run: bash install.sh [dest-dir]
+          (default dest: $HOME/.local/bin; no admin needed). Then open a NEW terminal.
+          macOS build is unsigned: right-click -> Open the first time (Gatekeeper).
+          AUTO-UPDATE: freeb auto-updates on start when a newer release is published
           (offline it just starts).
           EOF
-          ASSETS=(freebuff-fixed.exe tree-sitter.wasm freeb.bat install.bat INSTALL.txt)
-          UPDATERS=(update-fixed.ps1 update-fixed.bat install.sh update.sh freeb-launch.ps1 freeb-launch.sh)
+          # Installer/launcher extras fetched from main (single source of
+          # truth). sh scripts on every platform; bat/ps1 scripts only on the
+          # windows runner - they only ship in the windows zip, and BSD sed
+          # rejects `sed -i` without an argument (that was the macOS failure:
+          # "sed: -I or -i may not be used with stdin").
           git fetch origin main >/dev/null 2>&1 || true
           missing=0
-          for f in "${UPDATERS[@]}"; do
+          for f in install.sh freeb-launch.sh update.sh; do
             git cat-file -e "origin/main:local-tools/$f" 2>/dev/null || missing=1
           done
           if [ "$missing" = 0 ]; then
-            for f in "${UPDATERS[@]}"; do
+            for f in install.sh freeb-launch.sh update.sh; do
               git show "origin/main:local-tools/$f" > "release-assets/$f"
             done
-            sed -i 's/$/\r/' release-assets/update-fixed.ps1 release-assets/update-fixed.bat release-assets/freeb-launch.ps1
             chmod +x release-assets/install.sh release-assets/update.sh release-assets/freeb-launch.sh || true
-            ASSETS+=("${UPDATERS[@]}")
-            echo 'HAVE_UPDATER=true' >> "$GITHUB_ENV"
           else
-            echo '::warning::updater scripts not found on main; shipping without them'
-            echo 'HAVE_UPDATER=false' >> "$GITHUB_ENV"
+            echo '::warning::updater scripts not found on main; shipping without extras'
           fi
-          echo "ASSET_FILES=${ASSETS[*]}" >> "$GITHUB_ENV"
-          (cd release-assets && sha256sum "${ASSETS[@]}" > SHA256SUMS.txt)
-          (cd release-assets && 7z a ../freeb-windows-x64.zip "${ASSETS[@]}" SHA256SUMS.txt)
-          ls -la release-assets freeb-windows-x64.zip
+          if [ "$RUNNER_OS" = Windows ]; then
+            missing2=0
+            for f in update-fixed.ps1 update-fixed.bat freeb-launch.ps1; do
+              git cat-file -e "origin/main:local-tools/$f" 2>/dev/null || missing2=1
+            done
+            if [ "$missing2" = 0 ]; then
+              for f in update-fixed.ps1 update-fixed.bat freeb-launch.ps1; do
+                git show "origin/main:local-tools/$f" > "release-assets/$f"
+              done
+              sed -i 's/$/\r/' release-assets/update-fixed.ps1 release-assets/update-fixed.bat release-assets/freeb-launch.ps1
+            fi
+          fi
+          # Platform-appropriate extras: windows zip also carries the bat/ps1
+          # scripts (git-bash users included); unix zips carry only sh scripts.
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXTRA=(freeb.bat install.bat freeb-launch.ps1 update-fixed.ps1 update-fixed.bat install.sh update.sh freeb-launch.sh)
+          else
+            EXTRA=(install.sh freeb-launch.sh update.sh)
+          fi
+          sum() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+          (cd release-assets && sum "$exe_file" tree-sitter.wasm INSTALL.txt > SHA256SUMS.txt)
+          for f in "${EXTRA[@]}"; do
+            if [ -f "release-assets/$f" ]; then (cd release-assets && sum "$f" >> SHA256SUMS.txt); fi
+          done
+          (cd release-assets && if command -v 7z >/dev/null 2>&1; then 7z a "../${{ matrix.zip_name }}" "$exe_file" tree-sitter.wasm INSTALL.txt SHA256SUMS.txt; else zip -q "../${{ matrix.zip_name }}" "$exe_file" tree-sitter.wasm INSTALL.txt SHA256SUMS.txt; fi)
+          for f in "${EXTRA[@]}"; do
+            if [ -f "release-assets/$f" ]; then (cd release-assets && if command -v 7z >/dev/null 2>&1; then 7z a "../${{ matrix.zip_name }}" "$f"; else zip -q "../${{ matrix.zip_name }}" "$f"; fi); fi
+          done
+          echo "$BUILD_VER" > version.txt
+          ls -la release-assets
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform_label }}
+          path: |
+            ${{ matrix.zip_name }}
+            release-assets/SHA256SUMS.txt
+            version.txt
+            release-assets/freebuff-fixed.exe
+
+  publish-release:
+    needs: [rebase-test-push, build-release]
+    if: always() && needs.rebase-test-push.outputs.merged != 'true' && (needs.rebase-test-push.outputs.need_release == 'true' || inputs.force_release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
       - name: Publish rolling release
-        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_SHA: ${{ needs.rebase-test-push.outputs.upstream }}
           FIX_SHA: ${{ needs.rebase-test-push.outputs.sha }}
         run: |
+          zips=$(find artifacts -name 'freeb-*.zip' | sort)
+          if [ -z "$zips" ]; then
+            echo '::error::no platform artifacts found; nothing to release'
+            exit 1
+          fi
+          cat $(find artifacts -name 'SHA256SUMS.txt' | sort) > SHA256SUMS.txt
+          ver=$(find artifacts -name 'version.txt' | head -1 | xargs cat 2>/dev/null | tr -d '[:space:]')
+          if [ -z "$ver" ]; then
+            echo '::warning::no version.txt in artifacts; re-deriving from npm'
+            V=$(curl -s --max-time 20 https://registry.npmjs.org/freebuff/latest | grep -oE '"version":"[^"]+"' | head -1 | cut -d'"' -f4)
+            ver="${V:-0.0.0}-dev"
+          fi
+          shipped=$(find artifacts -maxdepth 2 -mindepth 2 -type d | wc -l | tr -d ' ')
           cat > /tmp/notes.md <<EOF
-          Fixed build for strict models (upstream issue #1306): MCP tool parameters arrive intact.
+          This fork: MCP tools work with any model. Ready-to-run fixed builds, no build needed.
           No login needed to download; freebuff login needed to use.
 
-          - Binary version: $BUILD_VER (tracks the latest upstream release)
+          - Binary version: $ver (tracks the latest upstream release)
           - Upstream base: $UPSTREAM_SHA
           - Fix commit: $FIX_SHA
           - Built: $(date -u '+%Y-%m-%d %H:%M UTC')
+          - Platforms shipped: $shipped of 3
           - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-          Install: download freeb-windows-x64.zip, unzip, double-click install.bat
-          (copies everything to %USERPROFILE%\.local\bin and fixes PATH, no admin),
-          then open a new terminal and run freeb --cwd <project>. Prefer manual
-          setup? See INSTALL.txt in the zip. Terminal users: bash install.sh does
-          the same from the command line.
-          freeb auto-updates on start when a newer release is published
-          (offline it just starts).
+          Pick the zip for your platform:
+          | Platform | Download |
+          | --- | --- |
+          | Windows x64 | freeb-windows-x64.zip |
+          | Linux x64 | freeb-linux-x64.zip |
+          | macOS Apple Silicon | freeb-macos-arm64.zip |
 
-          Maintainers: update-fixed.bat + update-fixed.ps1 (attached alongside the
-          zip when available) rebuild everything from source on your machine.
+          WINDOWS: unzip, double-click install.bat (copies everything to
+          %USERPROFILE%\.local\bin and fixes PATH, no admin), then open a new
+          terminal and run freeb --cwd <project>. Prefer manual setup? See
+          INSTALL.txt inside the zip. git-bash users: bash install.sh works too.
+          LINUX / MACOS: unzip, run bash install.sh [dest-dir], open a new terminal.
+          freeb auto-updates on start when a newer release is published
+          (offline it just starts). macOS build is unsigned: right-click -> Open
+          the first time (Gatekeeper).
+
+          Maintainers: update-fixed.bat + update-fixed.ps1 (windows zip) or
+          update.sh (unix zips) rebuild everything from source on your machine.
 
           This release is rebuilt automatically (every 12h) from the newest upstream code
           plus the fix, only when rebase and tests pass. It retires itself when upstream
           merges the fix.
           EOF
-          read -ra STAGED <<< "${ASSET_FILES:-}" || true
-          FILES=(freeb-windows-x64.zip)
-          for f in "${STAGED[@]}"; do FILES+=("release-assets/$f"); done
-          FILES+=(release-assets/SHA256SUMS.txt)
-          gh release delete fix-1306-latest --yes --cleanup-tag || true
-          gh release create fix-1306-latest \
-            --title "fix-1306 latest — v$BUILD_VER (upstream ${UPSTREAM_SHA:0:7} + fix ${FIX_SHA:0:7})" \
+          FILES=()
+          for z in $zips; do FILES+=("$z"); done
+          FILES+=(SHA256SUMS.txt)
+          loose_exe=$(find artifacts -name 'freebuff-fixed.exe' | head -1)
+          if [ -n "$loose_exe" ]; then FILES+=("$loose_exe"); fi
+          # -R is required: this job has no checkout, so gh cannot infer the
+          # repo from a git remote (that was the publish failure:
+          # "failed to run git: not a git repository").
+          gh release delete fix-1306-latest --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
+          gh release create fix-1306-latest -R "$GITHUB_REPOSITORY" \
+            --title "fix-1306 latest — v$ver (upstream ${UPSTREAM_SHA:0:7} + fix ${FIX_SHA:0:7})" \
             --notes-file /tmp/notes.md \
             "${FILES[@]}"
