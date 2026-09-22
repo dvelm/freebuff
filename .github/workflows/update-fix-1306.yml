@@ -107,23 +107,33 @@ jobs:
           EOF
           chmod +x /tmp/notify.sh
 
-      - name: Verify main mirror is in sync (advisory)
+      - name: Self-heal workflow mirror (main vs fix-1306)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Scheduled runs execute the workflow file from the default branch
+          # (main). A stale main copy silently regresses releases (that is how
+          # the per-platform matrix briefly vanished from the release: the
+          # scheduled run used the pre-matrix copy). So instead of only
+          # reporting drift, heal it: push the fix-1306 copy to main.
           git fetch origin main >/dev/null 2>&1 || true
           if git diff --quiet origin/main -- .github/workflows/update-fix-1306.yml 2>/dev/null; then
             echo 'Mirror in sync.'
           else
+            echo 'Mirror drifted: updating the main copy from fix-1306...'
+            cp .github/workflows/update-fix-1306.yml /tmp/fixed-yml
+            git checkout -B mirror-main origin/main
+            cp /tmp/fixed-yml .github/workflows/update-fix-1306.yml
+            git add .github/workflows/update-fix-1306.yml
+            git commit -m 'Sync update-fix-1306 workflow mirror (auto-heal)'
+            git push origin HEAD:main
+            git checkout -B fix-1306 origin/fix-1306
             {
-              echo 'The update-fix-1306.yml copy on main differs from fix-1306.'
-              echo 'Scheduled runs execute the main copy, so stale mirrors regress'
-              echo 'releases. Mirror it: on main, run'
-              echo '`git checkout fix-1306 -- .github/workflows/update-fix-1306.yml`,'
-              echo 'commit and push.'
+              echo 'The update-fix-1306.yml copy on main was stale (scheduled runs'
+              echo 'execute the main copy). It was automatically updated from fix-1306.'
             } > /tmp/drift.md
-            /tmp/open-issue.sh '[auto-update] workflow mirror drifted (main vs fix-1306)' /tmp/drift.md
-            /tmp/notify.sh 'freeb: workflow mirror drifted' 'main copy of update-fix-1306.yml differs from fix-1306; scheduled releases may regress. See open issue.'
+            /tmp/open-issue.sh '[auto-update] workflow mirror drifted (auto-healed)' /tmp/drift.md
+            /tmp/notify.sh 'freeb: workflow mirror auto-healed' 'main copy of update-fix-1306.yml was stale; updated from fix-1306.'
           fi
 
       - name: Track upstream and inspect PR state
