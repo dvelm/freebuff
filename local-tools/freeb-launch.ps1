@@ -87,33 +87,56 @@ if ($rel -and $rel.ver) {
 
 if ($needsUpdate) {
   Write-Host "Updating freeb: v$local -> v$($rel.ver) ..."
-  try {
-    $tmp = Join-Path $env:TEMP ("freeb-update-" + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $tmp | Out-Null
-    Invoke-WebRequest -Uri $rel.exe.browser_download_url -OutFile (Join-Path $tmp 'freebuff-fixed.exe') -TimeoutSec 600
-    Invoke-WebRequest -Uri $rel.wasm.browser_download_url -OutFile (Join-Path $tmp 'tree-sitter.wasm') -TimeoutSec 120
+  $tmp = Join-Path $env:TEMP ("freeb-update-" + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $tmp | Out-Null
+  # Downloads via curl.exe (not Invoke-WebRequest): binary-safe, follows
+  # redirects, no PS 5.1 quirks. Same as the sh port.
+  $exeTmp = Join-Path $tmp 'freebuff-fixed.exe'
+  $wasmTmp = Join-Path $tmp 'tree-sitter.wasm'
+  $dlOk = $true
+  $code = & curl.exe -sL --max-time 600 -o "$exeTmp" $rel.exe.browser_download_url 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "exe download failed (curl exit $LASTEXITCODE): $code"
+    $dlOk = $false
+  }
+  # tree-sitter.wasm is platform-independent and rarely changes: the update is
+  # not failed over it. Download when the loose asset exists; otherwise keep
+  # the installed one (that was the bug: a missing wasm asset aborted the
+  # whole update).
+  $wasmDownloaded = $false
+  if ($dlOk -and $null -ne $rel.wasm -and $null -ne $rel.wasm.browser_download_url) {
+    $code = & curl.exe -sL --max-time 120 -o "$wasmTmp" $rel.wasm.browser_download_url 2>&1
+    if ($LASTEXITCODE -eq 0 -and (Get-Item -LiteralPath $wasmTmp -ErrorAction SilentlyContinue).Length -gt 0) {
+      $wasmDownloaded = $true
+    }
+    else {
+      Write-Host "wasm download failed (curl exit $LASTEXITCODE): $code"
+      Write-Host 'Keeping the installed tree-sitter.wasm.'
+    }
+  }
+  if ($dlOk) {
     $ok = $true
-    foreach ($pair in @(@('freebuff-fixed.exe', $rel.exe), @('tree-sitter.wasm', $rel.wasm))) {
-      $name = $pair[0]; $asset = $pair[1]
-      if ($null -eq $asset -or $null -eq $asset.digest) { continue }
-      $want = ($asset.digest -replace '^sha256:', '').ToUpper()
-      $got = (Get-FileHash -LiteralPath (Join-Path $tmp $name) -Algorithm SHA256).Hash
-      if ($got -ne $want) {
-        Write-Host "Digest mismatch for $name; keeping current build."
-        $ok = $false
+    $want = ($rel.exe.digest -replace '^sha256:', '').ToUpper()
+    $got = (Get-FileHash -LiteralPath $exeTmp -Algorithm SHA256).Hash
+    if ($got -ne $want) {
+      Write-Host 'Digest mismatch for freebuff-fixed.exe; keeping current build.'
+      $ok = $false
+    }
+    if ($ok -and $wasmDownloaded -and $null -ne $rel.wasm.digest) {
+      $wantW = ($rel.wasm.digest -replace '^sha256:', '').ToUpper()
+      $gotW = (Get-FileHash -LiteralPath $wasmTmp -Algorithm SHA256).Hash
+      if ($gotW -ne $wantW) {
+        Write-Host 'Digest mismatch for tree-sitter.wasm; keeping the installed one.'
+        $wasmDownloaded = $false
       }
     }
     if ($ok) {
-      Copy-Item -LiteralPath (Join-Path $tmp 'freebuff-fixed.exe') -Destination $exe -Force
-      Copy-Item -LiteralPath (Join-Path $tmp 'tree-sitter.wasm') -Destination $wasm -Force
+      Copy-Item -LiteralPath $exeTmp -Destination $exe -Force
+      if ($wasmDownloaded) { Copy-Item -LiteralPath $wasmTmp -Destination $wasm -Force }
       Write-Host "Updated to v$($rel.ver)."
     }
-    Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
   }
-  catch {
-    Write-Host "Update download failed; starting the current build."
-  }
+  Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
-
 & $exe @args
 exit $LASTEXITCODE

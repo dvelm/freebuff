@@ -68,28 +68,40 @@ if [ "$needs_update" = "1" ]; then
   exe_url="$(printf '%s\n' "$rel_json" | grep -oE "\"browser_download_url\": *\"[^\"]*/$EXE\"" | head -1 | sed 's/^"browser_download_url": *"//;s/"$//')"
   wasm_url="$(printf '%s\n' "$rel_json" | grep -oE '"browser_download_url": *"[^"]*tree-sitter\.wasm"' | head -1 | sed 's/^"browser_download_url": *"//;s/"$//')"
   sums_url="$(printf '%s\n' "$rel_json" | grep -oE '"browser_download_url": *"[^"]*SHA256SUMS\.txt"' | head -1 | sed 's/^"browser_download_url": *"//;s/"$//')"
+  # exe download is required; tree-sitter.wasm is platform-independent and
+  # rarely changes - the update is not failed over it (that was the bug: a
+  # missing loose wasm asset aborted the whole update).
   if curl -sL --max-time 600 "$exe_url" -o "$TMP/freebuff-fixed.exe" 2>/dev/null &&
-    curl -sL --max-time 120 "$wasm_url" -o "$TMP/tree-sitter.wasm" 2>/dev/null &&
-    [ -s "$TMP/freebuff-fixed.exe" ] && [ -s "$TMP/tree-sitter.wasm" ]; then
+    [ -s "$TMP/freebuff-fixed.exe" ]; then
+    wasm_downloaded=0
+    if [ -n "$wasm_url" ] && curl -sL --max-time 120 "$wasm_url" -o "$TMP/tree-sitter.wasm" 2>/dev/null && [ -s "$TMP/tree-sitter.wasm" ]; then
+      wasm_downloaded=1
+    else
+      echo 'wasm download failed; keeping the installed tree-sitter.wasm.'
+    fi
     ok=1
     if [ -n "$sums_url" ] && curl -sL --max-time 30 "$sums_url" -o "$TMP/SHA256SUMS.txt" 2>/dev/null && [ -s "$TMP/SHA256SUMS.txt" ]; then
-      want_exe="$(grep -E 'freebuff-fixed\.exe' "$TMP/SHA256SUMS.txt" | cut -d' ' -f1 | tr -d '[:space:]')"
-      want_wasm="$(grep -E 'tree-sitter\.wasm' "$TMP/SHA256SUMS.txt" | cut -d' ' -f1 | tr -d '[:space:]')"
+      want_exe="$(grep -E "$EXE" "$TMP/SHA256SUMS.txt" | head -1 | cut -d' ' -f1 | tr -d '[:space:]')"
       got_exe="$(file_hash "$TMP/freebuff-fixed.exe")"
-      got_wasm="$(file_hash "$TMP/tree-sitter.wasm")"
       if [ -n "$want_exe" ] && [ "$got_exe" != "$want_exe" ]; then
-        echo "Digest mismatch for freebuff-fixed.exe; keeping the current build."
+        echo "Digest mismatch for $EXE; keeping the current build."
         ok=0
       fi
-      if [ -n "$want_wasm" ] && [ "$got_wasm" != "$want_wasm" ]; then
-        echo "Digest mismatch for tree-sitter.wasm; keeping the current build."
-        ok=0
+      if [ "$wasm_downloaded" = "1" ]; then
+        want_wasm="$(grep -E 'tree-sitter\.wasm' "$TMP/SHA256SUMS.txt" | head -1 | cut -d' ' -f1 | tr -d '[:space:]')"
+        got_wasm="$(file_hash "$TMP/tree-sitter.wasm")"
+        if [ -n "$want_wasm" ] && [ "$got_wasm" != "$want_wasm" ]; then
+          echo 'Digest mismatch for tree-sitter.wasm; keeping the installed one.'
+          wasm_downloaded=0
+        fi
       fi
     fi
     if [ "$ok" = "1" ]; then
       cp -f "$TMP/freebuff-fixed.exe" "$DIR/$EXE" &&
-        cp -f "$TMP/tree-sitter.wasm" "$WASM" &&
         echo "Updated to v$rel_ver-dev."
+      if [ "$wasm_downloaded" = "1" ]; then
+        cp -f "$TMP/tree-sitter.wasm" "$WASM"
+      fi
     fi
   else
     echo "Update download failed; starting the current build."

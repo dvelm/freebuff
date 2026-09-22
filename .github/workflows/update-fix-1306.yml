@@ -516,6 +516,7 @@ jobs:
             release-assets/SHA256SUMS.txt
             version.txt
             release-assets/freebuff-fixed.exe
+            release-assets/tree-sitter.wasm
 
   publish-release:
     needs: [rebase-test-push, build-release]
@@ -586,6 +587,12 @@ jobs:
           FILES+=(SHA256SUMS.txt)
           loose_exe=$(find artifacts -name 'freebuff-fixed.exe' | head -1)
           if [ -n "$loose_exe" ]; then FILES+=("$loose_exe"); fi
+          # tree-sitter.wasm is platform-independent (identical bytes for every
+          # platform) and the auto-update launchers download it as a loose
+          # asset - ship it loose. A missing wasm asset used to abort the
+          # whole self-update.
+          loose_wasm=$(find artifacts -name 'tree-sitter.wasm' | head -1)
+          if [ -n "$loose_wasm" ]; then FILES+=("$loose_wasm"); fi
           # -R is required: this job has no checkout, so gh cannot infer the
           # repo from a git remote (that was the publish failure:
           # "failed to run git: not a git repository").
