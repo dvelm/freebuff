@@ -32,6 +32,12 @@ name: update-fix-1306
 on:
   schedule:
     - cron: '*/5 * * * *'
+  # Fired by the local watcher (watch-upstream.ps1, Windows scheduled task):
+  # GitHub cannot receive events from the upstream repo, so a 5-minute local
+  # poll compares npm/upstream against the current release and POSTs this
+  # when they move. The watcher owns immediacy; the cron above is backup.
+  repository_dispatch:
+    types: [upstream-updated]
   workflow_dispatch:
     inputs:
       force_release:
