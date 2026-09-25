@@ -150,6 +150,11 @@ jobs:
             echo 'Mirror in sync.'
           else
             echo 'Mirror drifted: updating the main copy from fix-1306...'
+            # The commit identity must be set HERE: the "Track upstream" step
+            # (which also configures it) runs after this one, and an unidented
+            # commit fails with "empty ident name not allowed".
+            git config user.name 'fix-1306-bot'
+            git config user.email 'fix-1306-bot@users.noreply.github.com'
             cp .github/workflows/update-fix-1306.yml /tmp/fixed-yml
             git checkout -B mirror-main origin/main
             cp /tmp/fixed-yml .github/workflows/update-fix-1306.yml
