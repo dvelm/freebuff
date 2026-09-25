@@ -10,8 +10,10 @@ name: update-fix-1306
 # Token-triggered pushes do not start new workflow runs, so the push below
 # cannot loop back into this workflow.
 #
-# Triggers: twice-daily schedule, manual dispatch, and any push to fix-1306
-# (the last one validates the branch right after it is pushed).
+# Triggers: an every-5-minutes schedule (a cheap guard skips unchanged runs
+# so the release lands within minutes of an upstream/npm update), manual
+# dispatch, and any push to fix-1306 (the last one validates the branch right
+# after it is pushed).
 #
 # NOTE: this file must exist identically on BOTH main and fix-1306. GitHub
 # runs scheduled workflows from the default branch (main) only; the push
@@ -29,7 +31,7 @@ name: update-fix-1306
 
 on:
   schedule:
-    - cron: '0 */12 * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       force_release:
@@ -65,6 +67,33 @@ jobs:
         with:
           ref: fix-1306
           fetch-depth: 0
+
+      # Cheap pre-flight for scheduled runs: when neither upstream main nor
+      # the npm latest version moved since the current release, stop here.
+      # The empty job outputs downstream skip build-release/publish-release,
+      # so an unchanged 5-minute tick costs well under a minute. Push and
+      # dispatch events always run the full pipeline (they validate branch
+      # changes or rebuild on demand).
+      - name: Cheap change check (schedule only)
+        id: guard
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          upstream_sha=$(git ls-remote https://github.com/CodebuffAI/freebuff.git refs/heads/main | cut -f1)
+          npm_ver=$(curl -fsS --max-time 20 https://registry.npmjs.org/-/package/freebuff/dist-tags | jq -r .latest)
+          rel=$(gh release view fix-1306-latest -R "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null || true)
+          rel_up=$(printf '%s\n' "$rel" | grep -oE 'Upstream base: [0-9a-f]{40}' | head -1 | cut -d' ' -f3 || true)
+          rel_ver=$(printf '%s\n' "$rel" | grep -oE 'Binary version: [^ ]+' | head -1 | cut -d' ' -f3 || true)
+          want="${npm_ver}-dev"
+          if [ -n "$rel_up" ] && [ -n "$rel_ver" ] && [ "$rel_up" = "$upstream_sha" ] && [ "$rel_ver" = "$want" ]; then
+            echo "No change since release: upstream ${upstream_sha:0:7}, npm $npm_ver already shipped as $rel_ver."
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo "Change detected: upstream ${upstream_sha:0:7} (released ${rel_up:-none}), npm $npm_ver (released ${rel_ver:-none})."
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -138,6 +167,7 @@ jobs:
 
       - name: Track upstream and inspect PR state
         id: upstream
+        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.changed == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -173,7 +203,7 @@ jobs:
           /tmp/notify.sh 'freeb: upstream merged the fix' 'Upstream main now contains the MCP schema fix. Fork branch retired — switch to the release build.'
 
       - name: Rebase onto upstream main
-        if: steps.upstream.outputs.merged != 'true'
+        if: ${{ (github.event_name != 'schedule' || steps.guard.outputs.changed == 'true') && steps.upstream.outputs.merged != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -204,7 +234,7 @@ jobs:
           fi
 
       - name: Install, build SDK, run regression suite
-        if: steps.upstream.outputs.merged != 'true'
+        if: ${{ (github.event_name != 'schedule' || steps.guard.outputs.changed == 'true') && steps.upstream.outputs.merged != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -261,7 +291,7 @@ jobs:
 
       - name: Push rebased branch
         id: push
-        if: steps.upstream.outputs.merged != 'true'
+        if: ${{ (github.event_name != 'schedule' || steps.guard.outputs.changed == 'true') && steps.upstream.outputs.merged != 'true' }}
         run: |
           old=$(git rev-parse origin/fix-1306)
           new=$(git rev-parse HEAD)
@@ -578,7 +608,8 @@ jobs:
           Maintainers: update-fixed.bat + update-fixed.ps1 (windows zip) or
           update.sh (unix zips) rebuild everything from source on your machine.
 
-          This release is rebuilt automatically (every 12h) from the newest upstream code
+          This release is rebuilt automatically (within minutes of an upstream or npm
+          update) from the newest upstream code
           plus the fix, only when rebase and tests pass. It retires itself when upstream
           merges the fix.
           EOF
