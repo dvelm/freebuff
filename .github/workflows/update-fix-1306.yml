@@ -32,12 +32,6 @@ name: update-fix-1306
 on:
   schedule:
     - cron: '*/5 * * * *'
-  # Fired by the local watcher (watch-upstream.ps1, Windows scheduled task):
-  # GitHub cannot receive events from the upstream repo, so a 5-minute local
-  # poll compares npm/upstream against the current release and POSTs this
-  # when they move. The watcher owns immediacy; the cron above is backup.
-  repository_dispatch:
-    types: [upstream-updated]
   workflow_dispatch:
     inputs:
       force_release:
@@ -592,6 +586,14 @@ jobs:
           cat > /tmp/notes.md <<EOF
           This fork: MCP tools work with any model. Ready-to-run fixed builds, no build needed.
           No login needed to download; freebuff login needed to use.
+
+          > [!CAUTION]
+          > Unofficial build + account safety: this binary reports a `-dev`
+          > client version, and heavy automated MCP usage can resemble the
+          > traffic Codebuff's automated abuse defenses look for. One account
+          > was suspended after using this build (cause unconfirmed - modified
+          > client or automated-usage detection; appeal pending with support).
+          > Use at your own risk until upstream merges the fix (#1259).
 
           - Binary version: $ver (tracks the latest upstream release)
           - Upstream base: $UPSTREAM_SHA
